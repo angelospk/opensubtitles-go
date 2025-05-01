@@ -17,7 +17,7 @@ memory-bank.mdc
 # Wails build directory
 /cmd/gui/build/bin/
 /cmd/gui/build/
-
+.env
 # OS-specific files
 .DS_Store
 Thumbs.db
