@@ -6,9 +6,14 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"mime/multipart"
 	"net/http"
 	"net/url"
+	"os"
+	"strconv"
 	"sync"
+
+	coreErrors "github.com/angelospk/osuploadergui/pkg/core/errors" // Assuming this module path
 )
 
 const (
@@ -197,7 +202,43 @@ type DownloadResponse struct {
 	VIP          bool   `json:"vip"`     // User VIP status after download
 }
 
+// UploadParams defines the necessary metadata for uploading a subtitle.
+// Fields should match the expected parameters for the REST API's /upload endpoint.
+// Verify names against the official API documentation.
+type UploadParams struct {
+	FeatureID         int64   // The OpenSubtitles ID for the movie/show (obtained via /features search)
+	Language          string  // ISO 639-1 code (e.g., "en", "fr") - Verify API spec! Might be 639-2b.
+	FileName          string  // Original subtitle filename
+	VideoFileName     string  // Original video filename (optional but recommended)
+	Moviehash         string  // OSDb hash (optional but recommended)
+	MovieByteSize     int64   // Video file size (optional but recommended)
+	SeasonNumber      int     // Optional, for episodes
+	EpisodeNumber     int     // Optional, for episodes
+	FPS               float64 // Optional
+	HearingImpaired   bool    // Optional
+	ForeignPartsOnly  bool    // Optional
+	MachineTranslated bool    // Optional - verify if this exists in REST API
+	HD                bool    // Optional - verify if this exists in REST API
+	Release           string  // Optional - release name
+	Comment           string  // Optional - uploader comment
+	// Add any other optional fields the REST API supports (translator, etc.)
+}
+
+// UploadResponse defines the expected successful response structure from the /upload endpoint.
+// Verify against the official API documentation.
+type UploadResponse struct {
+	Message string `json:"message"`
+	Link    string `json:"link"` // URL to the new subtitle page
+	Data    struct {
+		SubtitleID int64 `json:"subtitle_id"`
+		FileID     int64 `json:"file_id"`
+		// Add other relevant fields
+	} `json:"data"`
+	// Include fields for potential warnings or partial success if the API uses them
+}
+
 // ErrorResponse represents a standard error response from the API.
+// TODO: Verify if this struct also applies to upload errors.
 type ErrorResponse struct {
 	Errors  []string `json:"errors"`
 	Status  int      `json:"status"`  // Sometimes status is outside errors
@@ -227,7 +268,17 @@ func (c *Client) Login(ctx context.Context, username, password string) (*LoginRe
 	var loginResp LoginResponse
 	err := c.doRequest(ctx, http.MethodPost, "/login", &loginReq, &loginResp, false) // Login does not require auth
 	if err != nil {
-		return nil, err // doRequest already wraps errors appropriately
+		// Check if it's an API error response we can potentially map
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			case http.StatusUnauthorized:
+				return nil, coreErrors.ErrUnauthorized
+			case http.StatusForbidden:
+				return nil, coreErrors.ErrForbidden
+				// Add other mappings as needed
+			}
+		}
+		return nil, err // Return original error if not mapped or not *ErrorResponse
 	}
 
 	// Store the token upon successful login
@@ -249,23 +300,27 @@ func (c *Client) Logout(ctx context.Context) error {
 		return nil
 	}
 
-	// Perform the logout request - we don't expect a response body on success.
+	// Perform the logout request
 	err := c.doRequest(ctx, http.MethodDelete, "/logout", nil, nil, true) // Requires auth
 
-	// Always clear the token locally, even if the API call failed
-	// (e.g., due to network error or expired token on server-side).
-	// The user intent is to be logged out.
+	// Always clear the token locally
 	c.tokenMu.Lock()
 	c.jwtToken = ""
 	c.tokenMu.Unlock()
 
 	if err != nil {
-		// Check if the error was specifically because the token was invalid (e.g., 401)
-		// In this case, we've achieved the goal (being logged out), so don't return an error.
-		if apiErr, ok := err.(*ErrorResponse); ok && apiErr.Status == http.StatusUnauthorized {
-			return nil // Effectively logged out
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			case http.StatusUnauthorized: // Token was likely already invalid/expired
+				return nil // Effectively logged out
+			case http.StatusForbidden:
+				return coreErrors.ErrForbidden
+			case http.StatusTooManyRequests:
+				return coreErrors.ErrRateLimited
+				// Add other mappings
+			}
 		}
-		// Return other errors (network, server issues, etc.)
+		// Return other errors (network, server issues, etc.) or the original *ErrorResponse
 		return err
 	}
 
@@ -313,7 +368,7 @@ func (c *Client) doRequest(ctx context.Context, method, relPath string, reqBodyS
 		token := c.jwtToken
 		c.tokenMu.RUnlock()
 		if token == "" {
-			return fmt.Errorf("authentication required for %s %s, but client is not logged in", method, relPath)
+			return fmt.Errorf("%w: authentication required for %s %s", coreErrors.ErrUnauthorized, method, relPath)
 		}
 		req.Header.Set("Authorization", "Bearer "+token)
 	}
@@ -353,8 +408,18 @@ func (c *Client) doRequest(ctx context.Context, method, relPath string, reqBodyS
 // GetUserInfo retrieves information about the currently authenticated user.
 func (c *Client) GetUserInfo(ctx context.Context) (*UserInfo, error) {
 	var userInfo UserInfo
-	err := c.doRequest(ctx, http.MethodGet, "/infos/user", nil, &userInfo, true) // Requires auth, no request body
+	err := c.doRequest(ctx, http.MethodGet, "/infos/user", nil, &userInfo, true)
 	if err != nil {
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			case http.StatusUnauthorized:
+				return nil, coreErrors.ErrUnauthorized
+			case http.StatusForbidden:
+				return nil, coreErrors.ErrForbidden
+			case http.StatusTooManyRequests:
+				return nil, coreErrors.ErrRateLimited
+			}
+		}
 		return nil, err
 	}
 	return &userInfo, nil
@@ -387,6 +452,13 @@ func (c *Client) SearchFeatures(ctx context.Context, params map[string]string) (
 	// Features search does not typically require authentication based on docs/common practice.
 	err = c.doRequest(ctx, http.MethodGet, relPathWithQuery, nil, &featuresResp, false)
 	if err != nil {
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			// Add relevant mappings if search can return specific errors like 404, 429
+			case http.StatusTooManyRequests:
+				return nil, coreErrors.ErrRateLimited
+			}
+		}
 		return nil, err
 	}
 
@@ -418,6 +490,13 @@ func (c *Client) SearchSubtitles(ctx context.Context, params map[string]string) 
 	// Subtitle search also does not typically require authentication.
 	err = c.doRequest(ctx, http.MethodGet, relPathWithQuery, nil, &subtitlesResp, false)
 	if err != nil {
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			// Add relevant mappings
+			case http.StatusTooManyRequests:
+				return nil, coreErrors.ErrRateLimited
+			}
+		}
 		return nil, err
 	}
 
@@ -428,20 +507,166 @@ func (c *Client) SearchSubtitles(ctx context.Context, params map[string]string) 
 // Authentication is required.
 func (c *Client) RequestDownload(ctx context.Context, reqData DownloadRequest) (*DownloadResponse, error) {
 	var downloadResp DownloadResponse
-	// Pass the request data struct directly to doRequest for marshaling.
-	err := c.doRequest(ctx, http.MethodPost, "/download", &reqData, &downloadResp, true) // Requires auth
+	err := c.doRequest(ctx, http.MethodPost, "/download", &reqData, &downloadResp, true)
 	if err != nil {
-		// Specific error handling for 404 (file not found) or 429 (rate limit)?
-		// The generic error handling in doRequest already returns *ErrorResponse.
-		// We can check the status code here if needed.
-		// if apiErr, ok := err.(*ErrorResponse); ok {
-		// 	if apiErr.Status == http.StatusNotFound { ... }
-		// }
+		if apiErr, ok := err.(*ErrorResponse); ok {
+			switch apiErr.Status {
+			case http.StatusUnauthorized:
+				return nil, coreErrors.ErrUnauthorized
+			case http.StatusForbidden:
+				// Could be quota limit or other permission issue
+				// TODO: Check apiErr.Message for specifics if API provides?
+				return nil, coreErrors.ErrForbidden
+			case http.StatusNotFound:
+				return nil, coreErrors.ErrNotFound // File ID not found
+			case http.StatusTooManyRequests:
+				return nil, coreErrors.ErrRateLimited
+			}
+		}
 		return nil, err
 	}
-
 	return &downloadResp, nil
 }
 
-// TODO: Implement /upload endpoint
+// UploadSubtitle handles the process of uploading a subtitle file using the REST API.
+// It assumes authentication (JWT token) is handled by the Client struct.
+// It requires the FeatureID to be known beforehand.
+// NOTE: Field names for multipart form data (e.g., "feature_id", "file") MUST be verified
+// against the official OpenSubtitles REST API documentation.
+func (c *Client) UploadSubtitle(ctx context.Context, params UploadParams, subtitleFilePath string) (*UploadResponse, error) {
+	// --- Stage 1: Prepare the multipart request ---
+	var requestBody bytes.Buffer
+	multipartWriter := multipart.NewWriter(&requestBody)
+
+	// --- Stage 2: Add Metadata Fields --- // Field names MUST match API spec!
+	_ = multipartWriter.WriteField("feature_id", strconv.FormatInt(params.FeatureID, 10))
+	_ = multipartWriter.WriteField("language", params.Language)
+	_ = multipartWriter.WriteField("filename", params.FileName) // Subtitle filename
+
+	if params.VideoFileName != "" {
+		_ = multipartWriter.WriteField("video_filename", params.VideoFileName)
+	}
+	if params.Moviehash != "" {
+		_ = multipartWriter.WriteField("moviehash", params.Moviehash)
+	}
+	if params.MovieByteSize > 0 {
+		_ = multipartWriter.WriteField("movie_bytesize", strconv.FormatInt(params.MovieByteSize, 10))
+	}
+	if params.SeasonNumber > 0 {
+		_ = multipartWriter.WriteField("season_number", strconv.Itoa(params.SeasonNumber))
+	}
+	if params.EpisodeNumber > 0 {
+		_ = multipartWriter.WriteField("episode_number", strconv.Itoa(params.EpisodeNumber))
+	}
+	if params.FPS > 0 {
+		_ = multipartWriter.WriteField("fps", fmt.Sprintf("%.3f", params.FPS))
+	}
+	if params.Release != "" {
+		_ = multipartWriter.WriteField("release", params.Release)
+	}
+	if params.Comment != "" {
+		_ = multipartWriter.WriteField("comment", params.Comment)
+	}
+
+	// Boolean flags - Format (string "true"/"false", "1"/"0") MUST match API spec!
+	_ = multipartWriter.WriteField("hearing_impaired", strconv.FormatBool(params.HearingImpaired))
+	_ = multipartWriter.WriteField("foreign_parts_only", strconv.FormatBool(params.ForeignPartsOnly))
+	// Verify these flags are supported by the REST API
+	_ = multipartWriter.WriteField("machine_translated", strconv.FormatBool(params.MachineTranslated))
+	_ = multipartWriter.WriteField("hd", strconv.FormatBool(params.HD))
+
+	// --- Stage 3: Add Subtitle File Content --- // Field name ("file"?) MUST match API spec!
+	file, err := os.Open(subtitleFilePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to open subtitle file '%s': %w", subtitleFilePath, err)
+	}
+	defer file.Close()
+
+	fileWriter, err := multipartWriter.CreateFormFile("file", params.FileName)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create form file part: %w", err)
+	}
+	if _, err = io.Copy(fileWriter, file); err != nil {
+		return nil, fmt.Errorf("failed to copy subtitle file content: %w", err)
+	}
+
+	// --- Stage 4: Finalize Multipart Request ---
+	err = multipartWriter.Close()
+	if err != nil {
+		return nil, fmt.Errorf("failed to close multipart writer: %w", err)
+	}
+
+	// --- Stage 5: Send the Request ---
+	uploadURL := c.baseURL + "/upload" // Verify exact endpoint path
+
+	// Check authentication before creating request
+	c.tokenMu.RLock()
+	token := c.jwtToken
+	c.tokenMu.RUnlock()
+	if token == "" {
+		return nil, coreErrors.ErrUnauthorized // Use defined error
+	}
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, uploadURL, &requestBody)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create upload request: %w", err)
+	}
+
+	req.Header.Set("Content-Type", multipartWriter.FormDataContentType())
+	req.Header.Set("Api-Key", c.apiKey)
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	req.Header.Set("User-Agent", c.userAgent)
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("failed to execute upload request: %w", err)
+	}
+	defer resp.Body.Close()
+
+	// --- Stage 6: Process Response ---
+	respBodyBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read upload response body: %w", err)
+	}
+
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var errResp ErrorResponse
+		if decErr := json.Unmarshal(respBodyBytes, &errResp); decErr == nil && (len(errResp.Errors) > 0 || errResp.Message != "") {
+			if errResp.Status == 0 {
+				errResp.Status = resp.StatusCode
+			}
+			// Map common status codes from the parsed error response
+			switch errResp.Status {
+			case http.StatusUnauthorized:
+				return nil, coreErrors.ErrUnauthorized
+			case http.StatusForbidden:
+				return nil, coreErrors.ErrForbidden
+			case http.StatusNotFound:
+				// Could mean feature_id not found, etc.
+				return nil, fmt.Errorf("%w: %s", coreErrors.ErrNotFound, errResp.Error())
+			case http.StatusTooManyRequests:
+				return nil, coreErrors.ErrRateLimited
+			// Add other specific upload errors if known (e.g., 422 Unprocessable Entity)
+			default:
+				return nil, &errResp // Return the parsed API error
+			}
+		}
+		// Generic error if parsing fails
+		return nil, fmt.Errorf("upload failed: status code %d, body: %s", resp.StatusCode, string(respBodyBytes))
+	}
+
+	var uploadResponse UploadResponse
+	if err = json.Unmarshal(respBodyBytes, &uploadResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse successful upload response JSON: %w (Body: %s)", err, string(respBodyBytes))
+	}
+
+	// Optional: Add logical check for success (e.g., non-zero IDs)
+	if uploadResponse.Data.SubtitleID == 0 || uploadResponse.Data.FileID == 0 {
+		return nil, fmt.Errorf("upload API call succeeded (HTTP %d) but logical failure indicated in response: %s", resp.StatusCode, string(respBodyBytes))
+	}
+
+	return &uploadResponse, nil
+}
+
 // TODO: Consider adding a helper function for the actual file download (GET request on the link)

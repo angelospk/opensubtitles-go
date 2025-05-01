@@ -1,11 +1,20 @@
 package opensubtitles
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
+
+	coreErrors "github.com/angelospk/osuploadergui/pkg/core/errors"
 )
 
 func TestClient_Login_Success(t *testing.T) {
@@ -116,18 +125,9 @@ func TestClient_Login_Failure(t *testing.T) {
 		t.Errorf("Login returned a non-nil response on failure: %+v", loginResp)
 	}
 
-	// Check if the error is the expected type
-	apiErr, ok := err.(*ErrorResponse)
-	if !ok {
-		t.Fatalf("Expected error type *ErrorResponse, got %T: %v", err, err)
-	}
-
-	// Check error details
-	if apiErr.Status != http.StatusUnauthorized {
-		t.Errorf("Expected error status %d, got %d", http.StatusUnauthorized, apiErr.Status)
-	}
-	if len(apiErr.Errors) != 1 || apiErr.Errors[0] != "Unauthorized" {
-		t.Errorf("Expected error message 'Unauthorized', got %v", apiErr.Errors)
+	// Check if the error is the expected type (coreErrors.ErrUnauthorized)
+	if !errors.Is(err, coreErrors.ErrUnauthorized) {
+		t.Fatalf("Expected error coreErrors.ErrUnauthorized, got %T: %v", err, err)
 	}
 
 	// Ensure token was not set
@@ -526,5 +526,134 @@ func TestClient_RequestDownload_Success(t *testing.T) {
 	}
 	if downloadResp.FileName != "custom_name.srt" {
 		t.Errorf("Expected FileName 'custom_name.srt', got '%s'", downloadResp.FileName)
+	}
+}
+
+func TestClient_UploadSubtitle_Success(t *testing.T) {
+	dummyFilePath := filepath.Join("testdata", "dummy.srt")
+
+	// Mock server - This needs to parse multipart form data
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Check method, path, auth, API key (similar to other tests)
+		if r.Method != http.MethodPost {
+			t.Errorf("Expected method POST, got %s", r.Method)
+			return
+		}
+		if r.URL.Path != "/api/v1/upload" {
+			t.Errorf("Expected path /api/v1/upload, got %s", r.URL.Path)
+			return
+		}
+		if r.Header.Get("Api-Key") != "test-api-key" {
+			t.Errorf("Expected Api-Key 'test-api-key', got '%s'", r.Header.Get("Api-Key"))
+			return
+		}
+		if r.Header.Get("Authorization") != "Bearer fake-jwt-token" {
+			t.Errorf("Expected Authorization 'Bearer fake-jwt-token', got '%s'", r.Header.Get("Authorization"))
+			return
+		}
+
+		// Parse the multipart form
+		err := r.ParseMultipartForm(32 << 20) // 32MB max memory
+		if err != nil {
+			http.Error(w, fmt.Sprintf("failed to parse multipart form: %v", err), http.StatusBadRequest)
+			return
+		}
+		defer r.MultipartForm.RemoveAll()
+
+		// --- Verify Metadata Fields --- (Adjust names based on ACTUAL API spec)
+		expectedFields := map[string]string{
+			"feature_id":       "54321",
+			"language":         "en",
+			"filename":         "dummy_upload.srt",
+			"video_filename":   "movie.mkv",
+			"moviehash":        "aabbccddeeff0011",
+			"movie_bytesize":   "1234567890",
+			"hearing_impaired": "true", // Assuming string booleans for test
+		}
+		for key, expectedValue := range expectedFields {
+			if r.MultipartForm.Value[key][0] != expectedValue {
+				t.Errorf("Expected form field '%s' to be '%s', got '%s'", key, expectedValue, r.MultipartForm.Value[key][0])
+			}
+		}
+
+		// --- Verify File Content --- (Adjust form file key based on ACTUAL API spec)
+		formFile, fileHeader, err := r.FormFile("file")
+		if err != nil {
+			t.Errorf("Expected form file field 'file', but got error: %v", err)
+			return
+		}
+		defer formFile.Close()
+
+		if fileHeader.Filename != "dummy_upload.srt" {
+			t.Errorf("Expected uploaded filename to be 'dummy_upload.srt', got '%s'", fileHeader.Filename)
+		}
+
+		// Read uploaded content and compare with original dummy file
+		uploadedContentBytes, err := io.ReadAll(formFile)
+		if err != nil {
+			t.Errorf("Failed to read uploaded file content: %v", err)
+			return
+		}
+		originalContentBytes, err := os.ReadFile(dummyFilePath)
+		if err != nil {
+			t.Fatalf("Failed to read original dummy file for comparison: %v", err)
+		}
+
+		if !bytes.Equal(uploadedContentBytes, originalContentBytes) {
+			t.Errorf("Uploaded file content does not match original dummy file content")
+		}
+
+		// Send successful response
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		json.NewEncoder(w).Encode(UploadResponse{
+			Message: "Subtitle uploaded successfully",
+			Link:    "https://www.opensubtitles.com/subtitles/123456",
+			Data: struct {
+				SubtitleID int64 `json:"subtitle_id"`
+				FileID     int64 `json:"file_id"`
+			}{
+				SubtitleID: 654321,
+				FileID:     987654,
+			},
+		})
+	}))
+	defer server.Close()
+
+	// Create client and simulate logged-in state
+	client := NewClient("test-api-key", server.Client())
+	client.baseURL = server.URL + "/api/v1" // Point client to mock server
+	client.jwtToken = "fake-jwt-token"
+
+	// Prepare upload params
+	params := UploadParams{
+		FeatureID:       54321,
+		Language:        "en",
+		FileName:        "dummy_upload.srt", // Use a different name than the source file for testing
+		VideoFileName:   "movie.mkv",
+		Moviehash:       "aabbccddeeff0011",
+		MovieByteSize:   1234567890,
+		HearingImpaired: true,
+	}
+
+	// Call UploadSubtitle
+	uploadResp, err := client.UploadSubtitle(context.Background(), params, dummyFilePath)
+
+	// Assertions
+	if err != nil {
+		t.Fatalf("UploadSubtitle returned an unexpected error: %v", err)
+	}
+	if uploadResp == nil {
+		t.Fatal("UploadSubtitle returned nil response")
+	}
+
+	if uploadResp.Data.SubtitleID != 654321 {
+		t.Errorf("Expected SubtitleID 654321, got %d", uploadResp.Data.SubtitleID)
+	}
+	if uploadResp.Data.FileID != 987654 {
+		t.Errorf("Expected FileID 987654, got %d", uploadResp.Data.FileID)
+	}
+	if !strings.Contains(uploadResp.Message, "success") {
+		t.Errorf("Expected success message, got: %s", uploadResp.Message)
 	}
 }
