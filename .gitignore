@@ -1,0 +1,37 @@
+# SpecStory explanation file
+.specstory/.what-is-this.md
+memory-bank/
+.specstory/**
+
+memory-bank.mdc
+.cursorindexingignore
+# Binaries
+*.exe
+*.dll
+*.so
+*.dylib
+
+# Build artifacts
+/build/
+
+# Wails build directory
+/cmd/gui/build/bin/
+/cmd/gui/build/
+
+# OS-specific files
+.DS_Store
+Thumbs.db
+
+# IDE files
+.idea/
+.vscode/
+*.swp
+
+# Go dependencies (handled by go.mod)
+/vendor/
+
+# Logs
+*.log
+
+# Configuration (if sensitive)
+# config.json 
