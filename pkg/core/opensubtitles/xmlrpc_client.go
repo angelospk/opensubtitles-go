@@ -2,6 +2,7 @@ package opensubtitles
 
 import (
 	"fmt"
+	"log"
 
 	"github.com/kolo/xmlrpc"
 )
@@ -127,10 +128,10 @@ type XmlRpcTryUploadResponseData struct {
 
 // XmlRpcTryUploadResponse represents the expected structure from the TryUploadSubtitles method.
 type XmlRpcTryUploadResponse struct {
-	Status      string                        `xmlrpc:"status"`
-	AlreadyInDB int                           `xmlrpc:"alreadyindb"` // 0 or 1
-	Data        []XmlRpcTryUploadResponseData `xmlrpc:"data"`        // Expecting an array
-	Seconds     float64                       `xmlrpc:"seconds"`
+	Status      string  `xmlrpc:"status"`
+	AlreadyInDB int     `xmlrpc:"alreadyindb"` // 0 or 1
+	Data        bool    `xmlrpc:"data"`        // Changed from slice to bool based on debug log
+	Seconds     float64 `xmlrpc:"seconds"`
 }
 
 // --- End TryUploadSubtitles Structs ---
@@ -199,18 +200,18 @@ func (c *XmlRpcClient) TryUploadSubtitles(params XmlRpcTryUploadParams) (*XmlRpc
 	}
 
 	var result XmlRpcTryUploadResponse
+	// Revert debug code - unmarshal directly into the corrected struct
 	err := c.client.Call("TryUploadSubtitles", args, &result)
 	if err != nil {
 		return nil, fmt.Errorf("XML-RPC TryUploadSubtitles call failed: %w", err)
 	}
+	// log.Printf("[DEBUG TryUploadSubtitles Raw Response]: %+v", rawResult) // Remove debug log
 
 	// Check status string for success
 	if result.Status == "" || result.Status[:3] != "200" {
-		// TODO: Map specific error status codes if known (e.g., 4xx)
 		return nil, fmt.Errorf("XML-RPC TryUploadSubtitles failed with status: %s", result.Status)
 	}
 
-	// The call succeeded, return the parsed response
 	return &result, nil
 }
 
@@ -227,10 +228,34 @@ func (c *XmlRpcClient) UploadSubtitles(params XmlRpcUploadSubtitlesParams) (*Xml
 		[]XmlRpcUploadSubtitlesParams{params},
 	}
 
+	// --- DEBUG: Log arguments being sent ---
+	log.Printf("[DEBUG UploadSubtitles Args] Token: %s...", c.token[:10]) // Log partial token
+	// Log the high-level structure; logging the full params might be too verbose due to base64 content
+	log.Printf("[DEBUG UploadSubtitles Args] Params Structure: BaseInfo=%+v, CD1 SubFilename=%s, CD1 Content Length=%d",
+		params.BaseInfo, params.CD1.SubFilename, len(params.CD1.SubContent))
+	// --- END DEBUG ---
+
 	var result XmlRpcUploadSubtitlesResponse
-	err := c.client.Call("UploadSubtitles", args, &result)
+
+	// --- DEBUG: Log raw response before parsing ---
+	var rawResult interface{}
+	err := c.client.Call("UploadSubtitles", args, &rawResult)
 	if err != nil {
+		// Log the specific error before returning
+		log.Printf("[DEBUG UploadSubtitles Call Error]: %v", err)
 		return nil, fmt.Errorf("XML-RPC UploadSubtitles call failed: %w", err)
+	}
+	// If call succeeded, log the raw response structure
+	log.Printf("[DEBUG UploadSubtitles Raw Response]: %+v", rawResult)
+	// --- END DEBUG ---
+
+	// Now, attempt to unmarshal into the specific struct
+	// Note: This part might fail if rawResult isn't the expected map type,
+	// but the debug log above will show us what we actually got.
+	err = c.client.Call("UploadSubtitles", args, &result)
+	if err != nil {
+		// This error might be different now (e.g., type mismatch if rawResult wasn't a map)
+		return nil, fmt.Errorf("XML-RPC UploadSubtitles parsing failed after initial call success: %w", err)
 	}
 
 	// Check status string for success
