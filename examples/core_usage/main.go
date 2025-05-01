@@ -5,12 +5,14 @@ import (
 
 	"crypto/md5"   // Import crypto/md5
 	"encoding/hex" // Import encoding/hex
+	"errors"
+	"fmt"
 	"log"
-
-	// "net/http"
 	"os"
 	"path/filepath" // Need this for filenames
+	"time"
 
+	// "net/http"
 	// "strconv"
 	// "time"
 
@@ -18,6 +20,7 @@ import (
 
 	// Use the correct module path for your project
 	// Alias for our errors
+	coreerrors "github.com/angelospk/osuploadergui/pkg/core/errors"
 	"github.com/angelospk/osuploadergui/pkg/core/opensubtitles"
 )
 
@@ -89,75 +92,79 @@ func main() {
 	   // ... REST Upload (now known to be likely incompatible) ...
 	*/
 
-	// --- XML-RPC Upload Process ---
-	log.Println("\n--- XML-RPC Upload Process --- ")
+	// --- XML-RPC Upload Process (Subtitle Only) ---
+	log.Println("\n--- XML-RPC Upload Process (Subtitle Only) --- ")
 	// --- Configurable values for the test upload ---
-	videoPathForUpload := `pkg/core/opensubtitles/testdata/video.mkv`    // <-- !!! REPLACE WITH A VALID VIDEO FILE PATH (>= 128KB) !!!
-	subtitlePathForUpload := `pkg/core/opensubtitles/testdata/dummy.srt` // Using dummy srt for test
-	// Note: IMDB ID is often required by TryUpload if hash is unknown
-	imdbIDForUpload := "137523" // IMDB ID for Fight Club
-	languageIDForUpload := "eng"
+	subtitlePathForUpload := `pkg/core/opensubtitles/testdata/the woman who run 2020.srt` // Use dummy.srt for test
+	imdbIDForUpload := "11697690"                                                         // IMDB ID for Fight Club
+	languageIDForUpload := "ell"
 	// --- End Configurable values ---
 
-	log.Printf("Attempting upload for Sub: %s, Video: %s, IMDB: %s, Lang: %s",
-		subtitlePathForUpload, videoPathForUpload, imdbIDForUpload, languageIDForUpload)
+	fmt.Printf("Attempting upload for Sub: %s, IMDB: %s, Lang: %s\n",
+		subtitlePathForUpload, imdbIDForUpload, languageIDForUpload)
 
-	// 1. Prepare initial data intent
+	// 1. Prepare initial data intent (subtitle only)
 	intent := opensubtitles.UserUploadIntent{
-		VideoFilePath:    videoPathForUpload,
 		SubtitleFilePath: subtitlePathForUpload,
+		SubtitleFileName: getBaseName(subtitlePathForUpload),
 		IMDBID:           imdbIDForUpload,
 		LanguageID:       languageIDForUpload,
-		VideoFileName:    getBaseName(videoPathForUpload),
-		SubtitleFileName: getBaseName(subtitlePathForUpload),
-		// Add other optional flags if desired
-		// HearingImpaired: true,
-		// ReleaseName: "Example.Release-GRP",
-		// Comment: "Uploaded via Go XML-RPC Example",
+		// Optionally: Comment: "Uploaded via Go XML-RPC Example",
 	}
 
 	// 2. Prepare TryUpload parameters (Calculates hashes)
-	log.Println("Preparing TryUpload parameters...")
+	fmt.Println("Preparing TryUpload parameters...")
 	tryParams, err := opensubtitles.PrepareTryUploadParams(intent)
 	if err != nil {
-		log.Fatalf("Failed to prepare TryUpload params: %v", err)
+		log.Fatalf("Error preparing TryUpload params: %v", err)
 	}
+	fmt.Printf("[DEBUG] TryUpload Params: %+v\n", tryParams)
 
-	// 3. Call TryUploadSubtitles
-	log.Println("Calling TryUploadSubtitles...")
-	tryResp, err := xmlrpcClient.TryUploadSubtitles(*tryParams)
+	// 3. Modify filename just before the call for uniqueness testing
+	uniqueSubFilename := fmt.Sprintf("%s_%d.srt", getBaseName(subtitlePathForUpload), time.Now().UnixNano())
+	tryParams.SubFilename = uniqueSubFilename // Use the unique filename
+
+	// 4. Call TryUploadSubtitles
+	fmt.Println("Calling TryUploadSubtitles...")
+	tryResponse, err := xmlrpcClient.TryUploadSubtitles(*tryParams)
 	if err != nil {
-		log.Fatalf("TryUploadSubtitles failed: %v", err)
-	}
-	log.Printf("TryUploadSubtitles response: Status='%s', AlreadyInDB=%d", tryResp.Status, tryResp.AlreadyInDB)
-
-	// 4. Check if already in DB
-	if tryResp.AlreadyInDB == 1 {
-		log.Println("Subtitle already exists in the database according to TryUploadSubtitles. Skipping final upload.")
+		if errors.Is(err, coreerrors.ErrUploadDuplicate) {
+			log.Println("Subtitle already exists in the database according to TryUploadSubtitles. Skipping final upload.")
+		} else {
+			log.Printf("TryUploadSubtitles failed: %v", err)
+			fmt.Printf("[DEBUG] TryUpload Params on Failure: %+v\n", tryParams)
+			return
+		}
 	} else {
-		log.Println("Subtitle not found in DB by TryUploadSubtitles. Proceeding with UploadSubtitles...")
+		log.Printf("TryUploadSubtitles response: Status='%s', Data=%v, AlreadyInDB=%d", tryResponse.Status, tryResponse.Data, tryResponse.AlreadyInDB)
 
-		// 5. Read and Base64 encode subtitle content
-		log.Println("Reading and encoding subtitle content...")
-		base64Content, err := opensubtitles.ReadAndEncodeSubtitle(intent.SubtitleFilePath)
-		if err != nil {
-			log.Fatalf("Failed to read/encode subtitle: %v", err)
-		}
+		// 5. Check if TryUpload response indicates we should proceed
+		if !tryResponse.Data {
+			log.Println("TryUpload response indicates duplicate or issue (Data=false). Skipping final upload.")
+		} else {
+			// --- UploadSubtitles ---
+			fmt.Println("Reading and encoding subtitle...")
+			base64Content, err := opensubtitles.ReadAndEncodeSubtitle(intent.SubtitleFilePath)
+			if err != nil {
+				log.Fatalf("Failed to read/encode subtitle: %v", err)
+			}
 
-		// 6. Prepare UploadSubtitles parameters
-		log.Println("Preparing UploadSubtitles parameters...")
-		uploadParams, err := opensubtitles.PrepareUploadSubtitlesParams(*tryParams, base64Content)
-		if err != nil {
-			log.Fatalf("Failed to prepare UploadSubtitles params: %v", err)
-		}
+			fmt.Println("Preparing UploadSubtitles parameters...")
+			uploadParams, err := opensubtitles.PrepareUploadSubtitlesParams(*tryParams, base64Content)
+			if err != nil {
+				log.Fatalf("Error preparing UploadSubtitles params: %v", err)
+			}
+			fmt.Printf("[DEBUG] UploadSubtitles Params: %+v\n", uploadParams)
 
-		// 7. Call UploadSubtitles
-		log.Println("Calling UploadSubtitles...")
-		uploadResp, err := xmlrpcClient.UploadSubtitles(*uploadParams)
-		if err != nil {
-			log.Fatalf("UploadSubtitles failed: %v", err)
+			fmt.Println("Calling UploadSubtitles...")
+			uploadResp, err := xmlrpcClient.UploadSubtitles(*uploadParams)
+			if err != nil {
+				log.Printf("UploadSubtitles failed: %v", err)
+				fmt.Printf("[DEBUG] UploadSubtitles Params on Failure: %+v\n", uploadParams)
+				return
+			}
+			log.Printf("UploadSubtitles successful! Status: %s, URL: %s", uploadResp.Status, uploadResp.Data)
 		}
-		log.Printf("UploadSubtitles successful! Status: %s, URL: %s", uploadResp.Status, uploadResp.Data)
 	}
 
 	// --- XML-RPC Logout ---

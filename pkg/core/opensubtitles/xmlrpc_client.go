@@ -1,33 +1,110 @@
 package opensubtitles
 
 import (
+	"crypto/md5"
+	"crypto/tls"
 	"fmt"
+	"net/http"
+	"net/rpc"
+	"net/url" // Re-added import
+
+	// "time" // Removed unused import
+
 	"log"
 
-	"github.com/kolo/xmlrpc"
+	"github.com/angelospk/osuploadergui/pkg/core/errors"
+	xmlrpc "github.com/kolo/xmlrpc"
 )
 
 const (
-	xmlRpcUrl = "https://api.opensubtitles.org:443/xml-rpc" // Use HTTPS
+	xmlRpcEndpoint = "https://api.opensubtitles.org:443/xml-rpc"
 	// UserAgent is already defined in client.go, we can reuse it.
 )
 
-// XmlRpcClient manages communication with the OpenSubtitles XML-RPC API.
+// XmlRpcClient handles communication with the OpenSubtitles XML-RPC API.
 type XmlRpcClient struct {
-	client *xmlrpc.Client
-	token  string // Store the login token
-	// Add userAgent if needed, or pass it in methods
+	client   *xmlrpc.Client
+	token    string
+	loggedIn bool
 }
 
-// NewXmlRpcClient creates a new OpenSubtitles XML-RPC API client.
+// NewXmlRpcClient creates a new XML-RPC client.
 func NewXmlRpcClient() (*XmlRpcClient, error) {
-	// TODO: Consider adding User-Agent header customization if library supports it.
-	// The kolo/xmlrpc library doesn't seem to have easy header customization.
-	client, err := xmlrpc.NewClient(xmlRpcUrl, nil) // nil transport uses DefaultTransport
-	if err != nil {
-		return nil, fmt.Errorf("failed to create XML-RPC client: %w", err)
+	// Allow insecure connections for potential local testing or specific environments if needed
+	// In production, you might want to enforce stricter TLS checks.
+	tr := &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Be cautious with this in production
 	}
-	return &XmlRpcClient{client: client}, nil
+	// httpClient := &http.Client{Transport: tr} // Removed unused variable
+
+	// Create the kolo/xmlrpc client
+	client, err := xmlrpc.NewClient(xmlRpcEndpoint, tr) // Pass tr (RoundTripper) instead of httpClient
+	if err != nil {
+		return nil, fmt.Errorf("error creating XML-RPC client: %w", err)
+	}
+
+	return &XmlRpcClient{
+		client:   client,
+		loggedIn: false,
+	}, nil
+}
+
+// Login authenticates the user via XML-RPC and stores the token.
+func (c *XmlRpcClient) Login(username, password, language, userAgent string) error {
+	var result XmlRpcLoginResponse
+	// Use positional arguments for kolo/xmlrpc
+	err := c.client.Call("LogIn", []interface{}{username, password, language, userAgent}, &result)
+	if err != nil {
+		// Check for standard net/rpc errors first
+		if err == rpc.ErrShutdown {
+			return fmt.Errorf("xmlrpc login connection shutdown: %w", err)
+		}
+		// Attempt to interpret as kolo/xmlrpc specific error if possible,
+		// otherwise, return a generic error.
+		// Note: kolo/xmlrpc might not expose detailed error types easily.
+		return fmt.Errorf("xmlrpc login call failed: %w", err)
+	}
+
+	if result.Status != "200 OK" {
+		// Attempt to map known error statuses
+		switch result.Status {
+		case "401 Unauthorized":
+			return errors.ErrUnauthorized
+		case "414 Unknown User Agent":
+			return fmt.Errorf("xmlrpc login failed: %s (provide a valid UserAgent)", result.Status)
+		// Add other known status code mappings here
+		default:
+			return fmt.Errorf("xmlrpc login failed with status: %s", result.Status)
+		}
+	}
+
+	c.token = result.Token
+	c.loggedIn = true
+	fmt.Printf("XML-RPC Login successful. Token: %s\n", c.token) // Added for debugging visibility
+	return nil
+}
+
+// Logout invalidates the user's session token via XML-RPC.
+func (c *XmlRpcClient) Logout() error {
+	if !c.loggedIn || c.token == "" {
+		return errors.ErrNotLoggedIn
+	}
+	var result XmlRpcStatusResponse
+	// Use positional arguments for kolo/xmlrpc
+	err := c.client.Call("LogOut", []interface{}{c.token}, &result)
+	if err != nil {
+		return fmt.Errorf("xmlrpc logout call failed: %w", err)
+	}
+
+	if result.Status != "200 OK" {
+		// Handle potential logout errors if the API defines specific ones
+		return fmt.Errorf("xmlrpc logout failed with status: %s", result.Status)
+	}
+
+	c.token = ""
+	c.loggedIn = false
+	fmt.Println("XML-RPC Logout successful.") // Added for debugging visibility
+	return nil
 }
 
 // --- XML-RPC Methods ---
@@ -40,56 +117,10 @@ type XmlRpcLoginResponse struct {
 	Seconds float64 `xmlrpc:"seconds"`
 }
 
-// Login performs authentication using the XML-RPC LogIn method.
-func (c *XmlRpcClient) Login(username, password, language, userAgent string) error {
-	args := []interface{}{username, password, language, userAgent}
-	var result XmlRpcLoginResponse
-
-	err := c.client.Call("LogIn", args, &result)
-	if err != nil {
-		return fmt.Errorf("XML-RPC LogIn call failed: %w", err)
-	}
-
-	// Check status string for success (e.g., contains "200 OK")
-	if result.Status == "" || result.Status[:3] != "200" {
-		return fmt.Errorf("XML-RPC LogIn failed with status: %s", result.Status)
-	}
-
-	if result.Token == "" {
-		return fmt.Errorf("XML-RPC LogIn succeeded but returned empty token (Status: %s)", result.Status)
-	}
-
-	c.token = result.Token
-	return nil
-}
-
-// Logout performs logout using the XML-RPC LogOut method.
-func (c *XmlRpcClient) Logout() error {
-	if c.token == "" {
-		return fmt.Errorf("cannot logout: not logged in")
-	}
-	args := []interface{}{c.token}
-	var result map[string]interface{} // Logout response is often simple status
-
-	err := c.client.Call("LogOut", args, &result)
-	if err != nil {
-		// XML-RPC library might return error for invalid token, etc.
-		// Logout might succeed even if token was bad server-side.
-		// Always clear local token.
-		c.token = ""
-		return fmt.Errorf("XML-RPC LogOut call failed: %w", err)
-	}
-
-	// Check status if possible (structure may vary)
-	if status, ok := result["status"]; ok {
-		if statusStr, ok := status.(string); ok && statusStr[:3] != "200" {
-			c.token = "" // Clear token even on logical failure
-			return fmt.Errorf("XML-RPC LogOut failed with status: %s", statusStr)
-		}
-	}
-
-	c.token = ""
-	return nil
+// XmlRpcStatusResponse is a generic response containing just status and time.
+type XmlRpcStatusResponse struct {
+	Status  string  `xmlrpc:"status"`
+	Seconds float64 `xmlrpc:"seconds"`
 }
 
 // --- TryUploadSubtitles Structs ---
@@ -128,10 +159,12 @@ type XmlRpcTryUploadResponseData struct {
 
 // XmlRpcTryUploadResponse represents the expected structure from the TryUploadSubtitles method.
 type XmlRpcTryUploadResponse struct {
-	Status      string  `xmlrpc:"status"`
-	AlreadyInDB int     `xmlrpc:"alreadyindb"` // 0 or 1
-	Data        bool    `xmlrpc:"data"`        // Changed from slice to bool based on debug log
-	Seconds     float64 `xmlrpc:"seconds"`
+	Status       string      `xmlrpc:"status"`
+	Data         bool        `xmlrpc:"data"` // Indicates if upload should proceed (true) or is duplicate (false)
+	RawData      interface{} // Holds the raw 'data' field for further processing (array/object)
+	AlreadyInDB  int         `xmlrpc:"alreadyindb"` // Usually 1 if duplicate, 0 otherwise
+	Seconds      float64     `xmlrpc:"seconds"`
+	SubActualCDN string      `xmlrpc:"subactualcdn"` // Added field based on potential responses
 }
 
 // --- End TryUploadSubtitles Structs ---
@@ -183,92 +216,227 @@ type XmlRpcUploadSubtitlesResponse struct {
 
 // --- End UploadSubtitles Structs ---
 
-// TryUploadSubtitles calls the XML-RPC method to check if a subtitle exists
-// and gather potential metadata before a full upload.
+// TryUploadSubtitles performs the first step of the upload process.
 func (c *XmlRpcClient) TryUploadSubtitles(params XmlRpcTryUploadParams) (*XmlRpcTryUploadResponse, error) {
-	if c.token == "" {
-		return nil, fmt.Errorf("cannot call TryUploadSubtitles: not logged in")
+	if !c.loggedIn || c.token == "" {
+		return nil, errors.ErrNotLoggedIn
 	}
 
-	// The API expects an array containing one map/struct, where the map key is "cd1"
-	// and the value is the struct with subtitle/movie details.
+	// Prepare the complex structure expected by the API
+	cdMap := make(map[string]interface{})
+	cdMap["subhash"] = params.SubHash
+	cdMap["subfilename"] = params.SubFilename
+	cdMap["moviehash"] = params.MovieHash
+	cdMap["moviebytesize"] = params.MovieByteSize // Already a string
+	cdMap["moviefilename"] = params.MovieFilename
+	if params.IDMovieImdb != "" {
+		cdMap["imdbid"] = params.IDMovieImdb
+	}
+	if params.MovieFPS != "" {
+		cdMap["moviefps"] = params.MovieFPS
+	}
+	if params.MovieTimeMS != "" {
+		cdMap["movietimems"] = params.MovieTimeMS
+	}
+	if params.SubAuthorComment != "" {
+		cdMap["subauthorcomment"] = params.SubAuthorComment
+	}
+	if params.SubTranslator != "" {
+		cdMap["subtranslator"] = params.SubTranslator
+	}
+	if params.MovieReleaseName != "" {
+		cdMap["moviereleasename"] = params.MovieReleaseName
+	}
+	if params.MovieAka != "" {
+		cdMap["movieaka"] = params.MovieAka
+	}
+	if params.HearingImpaired != "" {
+		cdMap["hearingimpaired"] = params.HearingImpaired
+	}
+	if params.HighDefinition != "" {
+		cdMap["highdefinition"] = params.HighDefinition
+	}
+	if params.AutomaticTranslation != "" {
+		cdMap["automatictranslation"] = params.AutomaticTranslation
+	}
+	if params.ForeignPartsOnly != "" {
+		cdMap["foreignpartsonly"] = params.ForeignPartsOnly
+	}
+
+	baseInfoMap := make(map[string]interface{})
+	if params.IDMovieImdb != "" {
+		baseInfoMap["idmovieimdb"] = params.IDMovieImdb
+	}
+	if params.SubLanguageID != "" {
+		baseInfoMap["sublanguageid"] = params.SubLanguageID
+	}
+	if params.MovieReleaseName != "" {
+		baseInfoMap["moviereleasename"] = params.MovieReleaseName
+	}
+	if params.MovieAka != "" {
+		baseInfoMap["movieaka"] = params.MovieAka
+	}
+	if params.SubAuthorComment != "" {
+		baseInfoMap["subauthorcomment"] = params.SubAuthorComment
+	}
+	if params.SubTranslator != "" {
+		baseInfoMap["subtranslator"] = params.SubTranslator
+	}
+	if params.ForeignPartsOnly != "" {
+		baseInfoMap["foreignpartsonly"] = params.ForeignPartsOnly
+	}
+
 	args := []interface{}{
 		c.token,
-		[]map[string]XmlRpcTryUploadParams{
-			{"cd1": params},
-		},
+		[]interface{}{cdMap},
+		baseInfoMap,
 	}
 
-	var result XmlRpcTryUploadResponse
-	// Revert debug code - unmarshal directly into the corrected struct
-	err := c.client.Call("TryUploadSubtitles", args, &result)
+	// Use xmlrpc.RawValue to decode the response flexibly
+	var rawResp interface{}
+	err := c.client.Call("TryUploadSubtitles", args, &rawResp)
 	if err != nil {
-		return nil, fmt.Errorf("XML-RPC TryUploadSubtitles call failed: %w", err)
+		return nil, fmt.Errorf("xmlrpc TryUploadSubtitles call failed: %w", err)
 	}
-	// log.Printf("[DEBUG TryUploadSubtitles Raw Response]: %+v", rawResult) // Remove debug log
+	log.Printf("[DEBUG] Raw TryUploadSubtitles response: %+v (type: %T)", rawResp, rawResp)
 
-	// Check status string for success
-	if result.Status == "" || result.Status[:3] != "200" {
-		return nil, fmt.Errorf("XML-RPC TryUploadSubtitles failed with status: %s", result.Status)
+	// Try to interpret the response as a map (struct) or bool
+	switch v := rawResp.(type) {
+	case map[string]interface{}:
+		var result XmlRpcTryUploadResponse
+		if status, ok := v["status"].(string); ok {
+			result.Status = status
+		}
+		if alreadyInDB, ok := v["alreadyindb"].(int); ok {
+			result.AlreadyInDB = alreadyInDB
+		} else if alreadyInDBf, ok := v["alreadyindb"].(float64); ok {
+			result.AlreadyInDB = int(alreadyInDBf)
+		}
+		if seconds, ok := v["seconds"].(float64); ok {
+			result.Seconds = seconds
+		}
+		if subActualCDN, ok := v["subactualcdn"].(string); ok {
+			result.SubActualCDN = subActualCDN
+		}
+		if data, ok := v["data"]; ok {
+			result.RawData = data // Save the raw data for further processing
+			// JS logic: if alreadyindb==1, treat as duplicate and return early
+			if result.AlreadyInDB == 1 {
+				result.Data = false
+				return &result, errors.ErrUploadDuplicate
+			}
+			// If alreadyindb==0, proceed and return the parsed response (including the data array/object)
+			// JS code expects to parse/use this data in the next step
+			result.Data = true
+			return &result, nil
+		}
+		// Defensive: if no data field, treat as error
+		return nil, fmt.Errorf("xmlrpc TryUploadSubtitles missing 'data' field")
+	case bool:
+		// If the response is just a bool, treat as Data field
+		if v {
+			return &XmlRpcTryUploadResponse{Status: "200 OK", Data: true, RawData: v, AlreadyInDB: 0}, nil
+		}
+		return &XmlRpcTryUploadResponse{Status: "200 OK", Data: false, RawData: v, AlreadyInDB: 1}, errors.ErrUploadDuplicate
+	default:
+		return nil, fmt.Errorf("unexpected TryUploadSubtitles response type: %T (%v)", rawResp, rawResp)
 	}
-
-	return &result, nil
 }
 
-// UploadSubtitles performs the final subtitle upload using the XML-RPC method.
-// It requires the prepared parameters including base64 encoded subtitle content.
+// UploadSubtitles performs the second step, uploading the actual subtitle file content.
 func (c *XmlRpcClient) UploadSubtitles(params XmlRpcUploadSubtitlesParams) (*XmlRpcUploadSubtitlesResponse, error) {
-	if c.token == "" {
-		return nil, fmt.Errorf("cannot call UploadSubtitles: not logged in")
+	if !c.loggedIn || c.token == "" {
+		return nil, errors.ErrNotLoggedIn
 	}
 
-	// The API expects the token and an array containing the single structured parameter.
+	// Prepare the structure for UploadSubtitles
+	// This involves base64 encoded, gzipped subtitle content.
+	subContentMap := make(map[string]interface{})
+	subContentMap["idsubtitlefile"] = params.BaseInfo.IDMovieImdb // From TryUpload response
+	subContentMap["subcontent"] = params.CD1.SubContent           // Base64(Gzip(file_content))
+
+	// --- BEGIN DEBUG LOGGING ---
+	maskedToken := ""
+	if len(c.token) > 8 {
+		maskedToken = c.token[:4] + "..." + c.token[len(c.token)-4:]
+	} else {
+		maskedToken = c.token
+	}
+	base64Len := len(params.CD1.SubContent)
+	base64Hash := ""
+	if base64Len > 0 {
+		base64Hash = fmt.Sprintf("%x", md5Sum([]byte(params.CD1.SubContent)))
+	}
+	log.Printf("[DEBUG] UploadSubtitles request: token=%s, idmovieimdb=%q, subhash=%q, subfilename=%q, base64len=%d, base64md5=%s, moviehash=%q, moviebytesize=%q, moviefilename=%q, moviefps=%q, movieframes=%q, movietimems=%q, hearingimpaired=%q, highdefinition=%q, automatictranslation=%q, foreignpartsonly=%q, subtranslator=%q, subauthorcomment=%q, moviereleasename=%q, movieaka=%q", maskedToken, params.BaseInfo.IDMovieImdb, params.CD1.SubHash, params.CD1.SubFilename, base64Len, base64Hash, params.CD1.MovieHash, params.CD1.MovieByteSize, params.CD1.MovieFilename, params.CD1.MovieFPS, params.CD1.MovieFrames, params.CD1.MovieTimeMS, params.BaseInfo.HearingImpaired, params.BaseInfo.HighDefinition, params.BaseInfo.AutomaticTranslation, params.BaseInfo.ForeignPartsOnly, params.BaseInfo.SubTranslator, params.BaseInfo.SubAuthorComment, params.BaseInfo.MovieReleaseName, params.BaseInfo.MovieAka)
+	// --- END DEBUG LOGGING ---
+
 	args := []interface{}{
 		c.token,
-		[]XmlRpcUploadSubtitlesParams{params},
+		[]interface{}{ // Array of subtitle contents
+			subContentMap,
+		},
+		// No third 'baseinfo' argument for UploadSubtitles according to docs/common practice
 	}
 
-	// --- DEBUG: Log arguments being sent ---
-	log.Printf("[DEBUG UploadSubtitles Args] Token: %s...", c.token[:10]) // Log partial token
-	// Log the high-level structure; logging the full params might be too verbose due to base64 content
-	log.Printf("[DEBUG UploadSubtitles Args] Params Structure: BaseInfo=%+v, CD1 SubFilename=%s, CD1 Content Length=%d",
-		params.BaseInfo, params.CD1.SubFilename, len(params.CD1.SubContent))
-	// --- END DEBUG ---
-
-	var result XmlRpcUploadSubtitlesResponse
-
-	// --- DEBUG: Log raw response before parsing ---
-	var rawResult interface{}
-	err := c.client.Call("UploadSubtitles", args, &rawResult)
+	var rawResp interface{}
+	err := c.client.Call("UploadSubtitles", args, &rawResp)
 	if err != nil {
-		// Log the specific error before returning
-		log.Printf("[DEBUG UploadSubtitles Call Error]: %v", err)
-		return nil, fmt.Errorf("XML-RPC UploadSubtitles call failed: %w", err)
-	}
-	// If call succeeded, log the raw response structure
-	log.Printf("[DEBUG UploadSubtitles Raw Response]: %+v", rawResult)
-	// --- END DEBUG ---
-
-	// Now, attempt to unmarshal into the specific struct
-	// Note: This part might fail if rawResult isn't the expected map type,
-	// but the debug log above will show us what we actually got.
-	err = c.client.Call("UploadSubtitles", args, &result)
-	if err != nil {
-		// This error might be different now (e.g., type mismatch if rawResult wasn't a map)
-		return nil, fmt.Errorf("XML-RPC UploadSubtitles parsing failed after initial call success: %w", err)
+		if err == rpc.ErrShutdown {
+			return nil, fmt.Errorf("xmlrpc UploadSubtitles connection shutdown: %w", err)
+		}
+		if urlErr, ok := err.(*url.Error); ok {
+			return nil, fmt.Errorf("xmlrpc UploadSubtitles network/url error: %w", urlErr)
+		}
+		return nil, fmt.Errorf("xmlrpc UploadSubtitles call failed: %w", err)
 	}
 
-	// Check status string for success
-	if result.Status == "" || result.Status[:3] != "200" {
-		// TODO: Map specific error status codes if known (e.g., 4xx like 402, 5xx like 503)
-		return nil, fmt.Errorf("XML-RPC UploadSubtitles failed with status: %s", result.Status)
-	}
+	log.Printf("[DEBUG] Raw UploadSubtitles response: %+v (type: %T)", rawResp, rawResp)
 
-	// JS checks if Data is empty string, let's do the same
-	if result.Data == "" {
-		return nil, fmt.Errorf("XML-RPC UploadSubtitles succeeded (status %s) but returned empty data URL", result.Status)
+	// Accept both map[string]interface{} and direct string (URL) as 'data'
+	switch v := rawResp.(type) {
+	case map[string]interface{}:
+		var result XmlRpcUploadSubtitlesResponse
+		if status, ok := v["status"].(string); ok {
+			result.Status = status
+		}
+		if data, ok := v["data"]; ok {
+			switch dataTyped := data.(type) {
+			case string:
+				// This is the URL to the uploaded subtitle page
+				result.Data = dataTyped
+				log.Printf("[DEBUG] UploadSubtitles: data is URL string: %s", dataTyped)
+			// Optionally, parse the URL for user feedback (TODO)
+			default:
+				log.Printf("[DEBUG] UploadSubtitles: data is unexpected type: %T", dataTyped)
+			}
+		}
+		if seconds, ok := v["seconds"].(float64); ok {
+			result.Seconds = seconds
+		}
+		if alreadyInDB, ok := v["alreadyindb"].(int); ok {
+			// Not always present, but handle if so
+			_ = alreadyInDB // Not used yet
+		}
+		if result.Status != "200 OK" {
+			return nil, fmt.Errorf("xmlrpc UploadSubtitles failed with status: %s", result.Status)
+		}
+		return &result, nil
+	default:
+		return nil, fmt.Errorf("unexpected UploadSubtitles response type: %T (%v)", rawResp, rawResp)
 	}
+}
 
-	// Upload seems successful
-	return &result, nil
+// md5Sum returns the MD5 hash of the input bytes.
+func md5Sum(data []byte) []byte {
+	h := md5.New()
+	h.Write(data)
+	return h.Sum(nil)
+}
+
+// Close closes the underlying XML-RPC client connection.
+func (c *XmlRpcClient) Close() error {
+	if c.client != nil {
+		return c.client.Close()
+	}
+	return nil
 }

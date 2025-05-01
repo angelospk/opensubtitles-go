@@ -2,12 +2,11 @@ package opensubtitles
 
 import (
 	"bytes"
+	"compress/gzip"
 	"encoding/base64"
 	"fmt"
 	"os"
 	"strconv"
-
-	"compress/gzip"
 
 	"github.com/angelospk/osuploadergui/pkg/core/fileops"
 )
@@ -62,21 +61,26 @@ func PrepareTryUploadParams(intent UserUploadIntent) (*XmlRpcTryUploadParams, er
 		return nil, fmt.Errorf("subtitle filename is required")
 	}
 
-	// Video Hash & Filename (Mandatory for TryUpload)
-	if intent.VideoFilePath == "" {
-		// Maybe allow TryUpload without video? JS seems to require it.
-		// For now, enforce based on JS.
-		return nil, fmt.Errorf("video file path is required for TryUpload")
-	}
-	movieHash, movieSize, err := fileops.CalculateOSDbHash(intent.VideoFilePath)
-	if err != nil {
-		return nil, fmt.Errorf("failed to calculate OSDb hash for video: %w", err)
-	}
-	params.MovieHash = movieHash
-	params.MovieByteSize = strconv.FormatInt(movieSize, 10)
-	params.MovieFilename = intent.VideoFileName // Assume already set
-	if params.MovieFilename == "" {
-		return nil, fmt.Errorf("video filename is required")
+	// Video Hash & Filename (Optional for TryUpload)
+	if intent.VideoFilePath != "" {
+		movieHash, movieSize, err := fileops.CalculateOSDbHash(intent.VideoFilePath)
+		if err != nil {
+			return nil, fmt.Errorf("failed to calculate OSDb hash for video: %w", err)
+		}
+		params.MovieHash = movieHash
+		params.MovieByteSize = strconv.FormatInt(movieSize, 10)
+		params.MovieFilename = intent.VideoFileName // Assume already set
+		if params.MovieFilename == "" {
+			return nil, fmt.Errorf("video filename is required if video file is provided")
+		}
+	} else {
+		// If no video, require both LanguageID and IMDBID for best results
+		if intent.LanguageID == "" {
+			return nil, fmt.Errorf("language ID is required if no video file is provided")
+		}
+		if intent.IMDBID == "" {
+			return nil, fmt.Errorf("IMDB ID is required if no video file is provided")
+		}
 	}
 
 	// Optional fields from intent (mapping names)

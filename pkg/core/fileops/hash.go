@@ -31,8 +31,20 @@ func CalculateMD5Hash(filePath string) (string, error) {
 	return hex.EncodeToString(hashBytes), nil
 }
 
+// checksumBuffer calculates the sum of 64-bit little-endian integers in the buffer.
+// This mimics the core loop of the checksum logic in the reference JS.
+func checksumBuffer(buf []byte) (sum uint64) {
+	// Process buffer in 8-byte chunks (64-bit numbers)
+	for i := 0; i+8 <= len(buf); i += 8 {
+		val := binary.LittleEndian.Uint64(buf[i : i+8])
+		sum += val
+	}
+	return
+}
+
 // CalculateOSDbHash calculates the OpenSubtitles Movie Hash for a given video file.
 // Based on the algorithm described at: http://trac.opensubtitles.org/projects/opensubtitles/wiki/HashSourceCodes
+// AND refined to match the logic in vankasteelj/opensubtitles-api hash.js
 func CalculateOSDbHash(filePath string) (hash string, byteSize int64, err error) {
 	file, err := os.Open(filePath)
 	if err != nil {
@@ -48,12 +60,12 @@ func CalculateOSDbHash(filePath string) (hash string, byteSize int64, err error)
 	}
 
 	byteSize = stat.Size()
-	if byteSize < osdbHashChunkSize*2 {
+	if byteSize < osdbHashChunkSize*2 { // Keep the size check
 		err = fmt.Errorf("file '%s' is too small for OSDb hashing (size: %d)", filePath, byteSize)
 		return
 	}
 
-	// Read first chunk
+	// Read first chunk (64KB)
 	startBuf := make([]byte, osdbHashChunkSize)
 	_, err = file.Read(startBuf)
 	if err != nil {
@@ -61,7 +73,7 @@ func CalculateOSDbHash(filePath string) (hash string, byteSize int64, err error)
 		return
 	}
 
-	// Read last chunk
+	// Read last chunk (64KB)
 	endBuf := make([]byte, osdbHashChunkSize)
 	_, err = file.ReadAt(endBuf, byteSize-osdbHashChunkSize)
 	if err != nil {
@@ -69,29 +81,16 @@ func CalculateOSDbHash(filePath string) (hash string, byteSize int64, err error)
 		return
 	}
 
-	// Calculate hash based on file size and chunks
-	var fileHash uint64 = uint64(byteSize) // Initialize with file size
+	// Calculate checksums of the chunks
+	startChecksum := checksumBuffer(startBuf)
+	endChecksum := checksumBuffer(endBuf)
 
-	// Process start chunk (64-bit little-endian numbers)
-	for i := 0; i < osdbHashChunkSize; i += 8 {
-		if i+8 > len(startBuf) { // Should not happen with correct chunk size read
-			break
-		}
-		val := binary.LittleEndian.Uint64(startBuf[i : i+8])
-		fileHash += val
-	}
+	// Calculate final hash by summing file size and chunk checksums
+	// Use uint64 arithmetic, overflow is expected/part of the algorithm
+	finalHash := uint64(byteSize) + startChecksum + endChecksum
 
-	// Process end chunk (64-bit little-endian numbers)
-	for i := 0; i < osdbHashChunkSize; i += 8 {
-		if i+8 > len(endBuf) { // Should not happen
-			break
-		}
-		val := binary.LittleEndian.Uint64(endBuf[i : i+8])
-		fileHash += val
-	}
-
-	hash = fmt.Sprintf("%016x", fileHash)
-	return // Return hash, byteSize, nil
+	hash = fmt.Sprintf("%016x", finalHash) // Format as 16-char hex
+	return                                 // Return hash, byteSize, nil
 }
 
 // TODO: Implement MediaInfo Extraction
