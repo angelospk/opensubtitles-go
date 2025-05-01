@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"mime/multipart"
 	"net/http"
 	"net/url"
@@ -93,7 +94,7 @@ type FeatureAttributes struct {
 	ImdbID         int    `json:"imdb_id"`
 	TmdbID         int    `json:"tmdb_id"`
 	FeatureID      string `json:"feature_id"` // String ID, potentially the same as Feature.ID
-	Year           int    `json:"year"`
+	Year           string `json:"year"`
 	SubtitlesCount int    `json:"subtitles_count"`
 	SeasonsCount   int    `json:"seasons_count"`
 	ParentTitle    string `json:"parent_title"` // For episodes
@@ -227,14 +228,16 @@ type UploadParams struct {
 // UploadResponse defines the expected successful response structure from the /upload endpoint.
 // Verify against the official API documentation.
 type UploadResponse struct {
-	Message string `json:"message"`
-	Link    string `json:"link"` // URL to the new subtitle page
-	Data    struct {
+	Message     string `json:"message"`
+	Link        string `json:"link"`        // URL to the new subtitle page (or constructed?)
+	AlreadyInDB int    `json:"alreadyindb"` // 1 if already in DB, 0 otherwise (Based on JS)
+	Data        struct {
 		SubtitleID int64 `json:"subtitle_id"`
 		FileID     int64 `json:"file_id"`
-		// Add other relevant fields
+		// Add other relevant fields if API returns more
 	} `json:"data"`
-	// Include fields for potential warnings or partial success if the API uses them
+	// Status might also be part of the response, even on success (JS checks response.status)
+	// Status int `json:"status"` // Example if needed
 }
 
 // ErrorResponse represents a standard error response from the API.
@@ -625,29 +628,47 @@ func (c *Client) UploadSubtitle(ctx context.Context, params UploadParams, subtit
 	defer resp.Body.Close()
 
 	// --- Stage 6: Process Response ---
+
+	// --- DEBUGGING: Log status code and raw body ---
+	log.Printf("[DEBUG UploadSubtitle] Received HTTP Status Code: %d (%s)", resp.StatusCode, resp.Status)
 	respBodyBytes, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read upload response body: %w", err)
+		// Log read error but also try to log partial body if possible
+		log.Printf("[DEBUG UploadSubtitle] Error reading response body: %v", err)
+		log.Printf("[DEBUG UploadSubtitle] Partial/Unread Body (if any): %s", string(respBodyBytes)) // May be empty
+		return nil, fmt.Errorf("failed to read upload response body: %w", err)                       // Return original error
 	}
+	log.Printf("[DEBUG UploadSubtitle] Raw Response Body: %s", string(respBodyBytes))
+	// --- END DEBUGGING ---
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	// Check for non-success HTTP status codes first
+	if resp.StatusCode != http.StatusOK { // Primarily expect 200 OK based on JS
+		// Handle potential 204 specifically if docs confirm it's possible
+		if resp.StatusCode == http.StatusNoContent {
+			log.Printf("[DEBUG UploadSubtitle] Received HTTP 204 No Content. Treating as potential edge case success or maybe failure indication? Returning minimal success for now.")
+			return &UploadResponse{Message: "Upload possibly successful (HTTP 204 No Content)"}, nil
+		}
+
+		// Process other non-200 codes as errors
 		var errResp ErrorResponse
 		if decErr := json.Unmarshal(respBodyBytes, &errResp); decErr == nil && (len(errResp.Errors) > 0 || errResp.Message != "") {
 			if errResp.Status == 0 {
 				errResp.Status = resp.StatusCode
 			}
-			// Map common status codes from the parsed error response
 			switch errResp.Status {
 			case http.StatusUnauthorized:
 				return nil, coreErrors.ErrUnauthorized
 			case http.StatusForbidden:
 				return nil, coreErrors.ErrForbidden
 			case http.StatusNotFound:
-				// Could mean feature_id not found, etc.
 				return nil, fmt.Errorf("%w: %s", coreErrors.ErrNotFound, errResp.Error())
 			case http.StatusTooManyRequests:
 				return nil, coreErrors.ErrRateLimited
-			// Add other specific upload errors if known (e.g., 422 Unprocessable Entity)
+			case 402: // Payment Required - JS interprets as invalid format/ads
+				return nil, fmt.Errorf("%w: Invalid format or ads detected (HTTP 402 - %s)", coreErrors.ErrForbidden, errResp.Error())
+			case http.StatusServiceUnavailable: // 503
+				return nil, fmt.Errorf("%w: %s", coreErrors.ErrServiceUnavailable, errResp.Error())
+			// Add 506 if needed, map to ErrServiceUnavailable or specific error
 			default:
 				return nil, &errResp // Return the parsed API error
 			}
@@ -656,15 +677,28 @@ func (c *Client) UploadSubtitle(ctx context.Context, params UploadParams, subtit
 		return nil, fmt.Errorf("upload failed: status code %d, body: %s", resp.StatusCode, string(respBodyBytes))
 	}
 
+	// Handle successful 200 OK response (expecting JSON body)
 	var uploadResponse UploadResponse
-	if err = json.Unmarshal(respBodyBytes, &uploadResponse); err != nil {
-		return nil, fmt.Errorf("failed to parse successful upload response JSON: %w (Body: %s)", err, string(respBodyBytes))
+	if len(respBodyBytes) == 0 {
+		// This is unexpected for 200 OK.
+		log.Printf("Warning: Upload received HTTP status 200 OK but response body was empty.")
+		return nil, fmt.Errorf("upload received HTTP status 200 OK but response body was empty")
 	}
 
-	// Optional: Add logical check for success (e.g., non-zero IDs)
-	if uploadResponse.Data.SubtitleID == 0 || uploadResponse.Data.FileID == 0 {
+	if err = json.Unmarshal(respBodyBytes, &uploadResponse); err != nil {
+		return nil, fmt.Errorf("failed to parse successful upload response JSON (Status %d): %w (Body: %s)", resp.StatusCode, err, string(respBodyBytes))
+	}
+
+	// Check logical success based on parsed response content
+	if uploadResponse.AlreadyInDB == 1 {
+		log.Printf("Upload successful (HTTP %d) but subtitle was already in DB.", resp.StatusCode)
+		// Return the response data, but maybe caller wants to know it wasn't 'new'
+		// Consider adding a flag or specific error type for 'already exists'
+	} else if uploadResponse.Data.SubtitleID == 0 || uploadResponse.Data.FileID == 0 {
+		// Successful HTTP status but logical failure indicated in response
 		return nil, fmt.Errorf("upload API call succeeded (HTTP %d) but logical failure indicated in response: %s", resp.StatusCode, string(respBodyBytes))
 	}
+	// else: Assume success if not already in DB and IDs are present
 
 	return &uploadResponse, nil
 }
