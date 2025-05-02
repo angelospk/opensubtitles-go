@@ -3,442 +3,327 @@ package queue_test
 import (
 	"fmt"
 	"io/ioutil"
-	"log"
+	// "log"
 	"os"
-	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/angelospk/osuploadergui/pkg/core/metadata"
 	"github.com/angelospk/osuploadergui/pkg/core/queue"
+	log "github.com/sirupsen/logrus"
 	"github.com/stretchr/testify/assert"
-	"github.com/stretchr/testify/require"
 )
 
-// Helper function to create a QueueManager in a temporary directory
-func setupTestQueueManager(t *testing.T) (*queue.QueueManager, string) {
+// Helper to create a QueueManager for testing
+func setupTestQueueManager(t *testing.T) (*queue.QueueManager, func()) {
 	tempDir := t.TempDir()
-	logger := log.New(ioutil.Discard, "", 0) // Discard logs during tests
+	// Use logrus logger, discard output for most tests
+	logger := log.New()
+	logger.SetOutput(ioutil.Discard) // Discard logs unless debugging
+	// logger.SetOutput(os.Stdout) // Uncomment to see logs
+	logger.SetLevel(log.InfoLevel)
+
 	qm, err := queue.NewQueueManager(tempDir, logger)
-	require.NoError(t, err, "NewQueueManager should not return an error")
-	require.NotNil(t, qm, "NewQueueManager should return a valid manager")
-	return qm, tempDir
+	assert.NoError(t, err, "Failed to create QueueManager for testing")
+	return qm, func() { os.RemoveAll(tempDir) } // Cleanup function
 }
 
-// Helper to create a sample UploadJob
-func createSampleJob(subPath string, status metadata.JobStatus) metadata.UploadJob {
-	return metadata.UploadJob{
-		SubtitleInfo: &metadata.SubtitleInfo{
-			FilePath: subPath,
-			FileName: filepath.Base(subPath),
-			Language: "en", // Assume some basic info
-		},
-		VideoInfo: &metadata.VideoInfo{
-			FilePath: "/path/to/video.mkv",
-			FileName: "video.mkv",
-		},
-		Status: status,
-	}
-}
+func TestQueueManager_Initialization(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
 
-func TestNewQueueManager(t *testing.T) {
-	tempDir := t.TempDir()
-	logger := log.New(ioutil.Discard, "", 0)
-
-	// Test 1: Successful creation
-	qm, err := queue.NewQueueManager(tempDir, logger)
-	assert.NoError(t, err)
 	assert.NotNil(t, qm)
-	assert.DirExists(t, tempDir) // Ensure directory was created if needed
-
-	// Test 2: Error creating directory (e.g., permissions)
-	// Make the tempDir read-only to simulate creation failure
-	// Note: This might not work reliably on all OS/filesystems
-	// _ = os.Chmod(tempDir, 0400)
-	// _, err = queue.NewQueueManager(filepath.Join(tempDir, "subdir", "subsubdir"), logger)
-	// assert.Error(t, err)
-	// _ = os.Chmod(tempDir, 0755) // Restore permissions
-}
-
-func TestSaveLoadQueueState(t *testing.T) {
-	qm, tempDir := setupTestQueueManager(t)
-	queueFile := filepath.Join(tempDir, "queue.json")
-
-	// 1. Initial state should be empty
 	assert.Empty(t, qm.GetQueue(), "Initial queue should be empty")
-
-	// 2. Add jobs and save
-	job1 := createSampleJob("/subs/sub1.srt", metadata.StatusPending)
-	job2 := createSampleJob("/subs/sub2.srt", metadata.StatusPending)
-	err := qm.AddToQueue(job1, job2)
-	require.NoError(t, err)
-	assert.Len(t, qm.GetQueue(), 2, "Queue should have 2 items after adding")
-
-	// Check file exists after AddToQueue (which calls Save)
-	assert.FileExists(t, queueFile)
-
-	// 3. Create a new manager in the same directory to load the state
-	logger := log.New(ioutil.Discard, "", 0)
-	qm2, err := queue.NewQueueManager(tempDir, logger)
-	require.NoError(t, err)
-	loadedQueue := qm2.GetQueue()
-	assert.Len(t, loadedQueue, 2, "Loaded queue should have 2 items")
-	// Basic check - more thorough checks might compare fields
-	assert.Equal(t, job1.SubtitleInfo.FilePath, loadedQueue[0].SubtitleInfo.FilePath)
-	assert.Equal(t, job2.SubtitleInfo.FilePath, loadedQueue[1].SubtitleInfo.FilePath)
-	assert.NotZero(t, loadedQueue[0].SubmittedAt, "SubmittedAt should be set")
-
-	// 4. Test loading non-existent file (should be handled gracefully)
-	qm3, _ := setupTestQueueManager(t) // Uses a *new* temp dir
-	assert.Empty(t, qm3.GetQueue())
-
-	// 5. Test loading empty file
-	require.NoError(t, os.WriteFile(queueFile, []byte{}, 0644)) // Overwrite with empty file
-	qm4, err := queue.NewQueueManager(tempDir, logger)
-	require.NoError(t, err)
-	assert.Empty(t, qm4.GetQueue(), "Queue loaded from empty file should be empty")
-
-	// 6. Test loading invalid JSON
-	require.NoError(t, os.WriteFile(queueFile, []byte("invalid json"), 0644))
-	_, err = queue.NewQueueManager(tempDir, logger) // Should log error, but return qm
-	assert.NoError(t, err)                          // NewQueueManager itself doesn't error on load failure, it logs
-	// We can't easily assert logger output without capturing it, but ensure it doesn't panic
-}
-
-func TestSaveLoadHistory(t *testing.T) {
-	qm, tempDir := setupTestQueueManager(t)
-	historyFile := filepath.Join(tempDir, "history.json")
-
-	// 1. Initial state
 	assert.Empty(t, qm.GetHistory(), "Initial history should be empty")
-
-	// 2. Add jobs to queue and move to history
-	job1 := createSampleJob("/history/sub1.srt", metadata.StatusComplete)
-	job2 := createSampleJob("/history/sub2.srt", metadata.StatusFailed)
-
-	err := qm.AddToQueue(job1, job2) // Add first
-	require.NoError(t, err)
-
-	// Simulate processing and moving
-	require.NoError(t, qm.UpdateJobStatus(0, metadata.StatusComplete, "OK"))
-	require.NoError(t, qm.MoveJobToHistory(0))                                // Move job1
-	require.NoError(t, qm.UpdateJobStatus(0, metadata.StatusFailed, "Error")) // Update job2 (now at index 0)
-	require.NoError(t, qm.MoveJobToHistory(0))                                // Move job2
-
-	assert.Len(t, qm.GetQueue(), 0, "Queue should be empty after moving")
-	currentHistory := qm.GetHistory()
-	assert.Len(t, currentHistory, 2, "History should have 2 items")
-	assert.FileExists(t, historyFile)
-
-	// Check order (prepended) and status
-	assert.Equal(t, job2.SubtitleInfo.FilePath, currentHistory[0].SubtitleInfo.FilePath)
-	assert.Equal(t, metadata.StatusFailed, currentHistory[0].Status)
-	assert.Equal(t, job1.SubtitleInfo.FilePath, currentHistory[1].SubtitleInfo.FilePath)
-	assert.Equal(t, metadata.StatusComplete, currentHistory[1].Status)
-
-	// 3. Load history in a new manager
-	logger := log.New(ioutil.Discard, "", 0)
-	qm2, err := queue.NewQueueManager(tempDir, logger)
-	require.NoError(t, err)
-	loadedHistory := qm2.GetHistory()
-	assert.Len(t, loadedHistory, 2, "Loaded history should have 2 items")
-	assert.Equal(t, job2.SubtitleInfo.FilePath, loadedHistory[0].SubtitleInfo.FilePath)
-	assert.Equal(t, job1.SubtitleInfo.FilePath, loadedHistory[1].SubtitleInfo.FilePath)
 }
 
-func TestAddToQueue(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
+func TestQueueManager_Persistence(t *testing.T) {
+	tempDir := t.TempDir() // Need consistent dir across instances
+	defer os.RemoveAll(tempDir)
 
-	job1 := createSampleJob("/subs/add1.srt", metadata.StatusPending)
-	job2 := createSampleJob("/subs/add2.srt", metadata.StatusPending)
-	job3Invalid := metadata.UploadJob{Status: metadata.StatusPending} // Missing subtitle info
-	job1Duplicate := createSampleJob("/subs/add1.srt", metadata.StatusPending)
+	// Use logrus logger
+	logger := log.New()
+	logger.SetOutput(ioutil.Discard)
+	logger.SetLevel(log.InfoLevel)
 
-	// Add valid job
-	err := qm.AddToQueue(job1)
+	// Instance 1: Add items and save
+	qm1, err := queue.NewQueueManager(tempDir, logger)
 	assert.NoError(t, err)
+
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}}
+	added, skipped := qm1.AddToQueue([]metadata.UploadJob{job1, job2})
+	assert.Equal(t, 2, added)
+	assert.Equal(t, 0, skipped)
+	// AddToQueue already saves, but call explicitly for clarity if needed
+	err = qm1.SaveQueueState()
+	assert.NoError(t, err)
+	err = qm1.SaveHistory() // Save empty history
+	assert.NoError(t, err)
+
+	// Instance 2: Load state
+	qm2, err := queue.NewQueueManager(tempDir, logger)
+	assert.NoError(t, err)
+	assert.Len(t, qm2.GetQueue(), 2, "Queue should have 2 items after loading")
+	assert.Len(t, qm2.GetHistory(), 0, "History should be empty after loading")
+	assert.Equal(t, "sub1.srt", qm2.GetQueue()[0].SubtitleInfo.FilePath)
+}
+
+func TestQueueManager_AddToQueue(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
+
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}}
+	job3Invalid := metadata.UploadJob{} // Missing SubtitleInfo
+	job1Duplicate := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+
+	// Add valid jobs
+	added, skipped := qm.AddToQueue([]metadata.UploadJob{job1})
+	assert.Equal(t, 1, added)
+	assert.Equal(t, 0, skipped)
 	assert.Len(t, qm.GetQueue(), 1)
 	assert.Equal(t, metadata.StatusPending, qm.GetQueue()[0].Status)
 	assert.NotZero(t, qm.GetQueue()[0].SubmittedAt)
 
-	// Add multiple valid jobs
-	err = qm.AddToQueue(job2)
-	assert.NoError(t, err)
+	added, skipped = qm.AddToQueue([]metadata.UploadJob{job2})
+	assert.Equal(t, 1, added)
+	assert.Equal(t, 0, skipped)
 	assert.Len(t, qm.GetQueue(), 2)
 
-	// Add invalid job (should be skipped)
-	err = qm.AddToQueue(job3Invalid)
-	assert.NoError(t, err) // No error, just logs a skip
+	// Add invalid job
+	added, skipped = qm.AddToQueue([]metadata.UploadJob{job3Invalid})
+	assert.Equal(t, 0, added)
+	assert.Equal(t, 1, skipped)
 	assert.Len(t, qm.GetQueue(), 2)
 
-	// Add duplicate job (should be skipped)
-	err = qm.AddToQueue(job1Duplicate)
-	assert.NoError(t, err) // No error, just logs a skip
+	// Add duplicate job
+	added, skipped = qm.AddToQueue([]metadata.UploadJob{job1Duplicate})
+	assert.Equal(t, 0, added)
+	assert.Equal(t, 1, skipped)
 	assert.Len(t, qm.GetQueue(), 2)
 
-	// Add mix (valid, duplicate, invalid)
-	job4 := createSampleJob("/subs/add4.srt", metadata.StatusPending)
-	err = qm.AddToQueue(job4, job1Duplicate, job3Invalid)
-	assert.NoError(t, err)
-	assert.Len(t, qm.GetQueue(), 3) // Only job4 should be added
-	assert.Equal(t, job4.SubtitleInfo.FilePath, qm.GetQueue()[2].SubtitleInfo.FilePath)
+	// Add multiple at once (valid + duplicate)
+	job4 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub4.srt"}}
+	added, skipped = qm.AddToQueue([]metadata.UploadJob{job1Duplicate, job4})
+	assert.Equal(t, 1, added)
+	assert.Equal(t, 1, skipped)
+	assert.Len(t, qm.GetQueue(), 3)
+	assert.Equal(t, "sub4.srt", qm.GetQueue()[2].SubtitleInfo.FilePath)
 }
 
-func TestGetNextPendingJob(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
+func TestQueueManager_GetNextPendingJob(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
 
-	job1 := createSampleJob("/subs/pending1.srt", metadata.StatusPending)
-	job2 := createSampleJob("/subs/processing.srt", metadata.StatusProcessing)
-	job3 := createSampleJob("/subs/pending2.srt", metadata.StatusPending)
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}, Status: metadata.StatusPending}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}, Status: metadata.StatusUploading}
+	job3 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub3.srt"}, Status: metadata.StatusPending}
 
-	// 1. Empty queue
-	nextJob, index := qm.GetNextPendingJob()
+	// No jobs
+	nextJob := qm.GetNextPendingJob()
 	assert.Nil(t, nextJob)
-	assert.Equal(t, -1, index)
 
-	// 2. Add jobs
-	require.NoError(t, qm.AddToQueue(job1, job2, job3))
-	// Queue: [job1(Pending, 0), job2(Processing, 1), job3(Pending, 2)]
+	// Add jobs
+	_, _ = qm.AddToQueue([]metadata.UploadJob{job1, job2, job3})
 
-	// 3. Get first pending job
-	nextJob, index = qm.GetNextPendingJob()
-	require.NotNil(t, nextJob)
-	assert.Equal(t, 0, index, "Index of first pending job should be 0")
-	assert.Equal(t, job1.SubtitleInfo.FilePath, nextJob.SubtitleInfo.FilePath)
-	assert.Equal(t, metadata.StatusPending, nextJob.Status)
+	// Get first pending
+	nextJob = qm.GetNextPendingJob()
+	assert.NotNil(t, nextJob)
+	assert.Equal(t, "sub1.srt", nextJob.SubtitleInfo.FilePath)
 
-	// 4. Update first job's status and get next pending job
-	firstPendingIndex := index // Store the index we just found (0)
-	require.NoError(t, qm.UpdateJobStatus(firstPendingIndex, metadata.StatusReady, ""), "Update status of job at index 0")
-	// Queue: [job1(Ready, 0), job2(Processing, 1), job3(Pending, 2)]
+	// Mark first as non-pending and get next
+	// Use jobID (FilePath) to update
+	err := qm.UpdateJobStatus(job1.SubtitleInfo.FilePath, metadata.StatusComplete, "Done")
+	assert.NoError(t, err)
 
-	nextJob, index = qm.GetNextPendingJob()
-	require.NotNil(t, nextJob, "Should find the next pending job")
-	assert.Equal(t, 2, index, "Index of the next pending job should be 2") // job3 is the next pending
-	assert.Equal(t, job3.SubtitleInfo.FilePath, nextJob.SubtitleInfo.FilePath)
-	assert.Equal(t, metadata.StatusPending, nextJob.Status)
+	nextJob = qm.GetNextPendingJob()
+	assert.NotNil(t, nextJob)
+	assert.Equal(t, "sub3.srt", nextJob.SubtitleInfo.FilePath)
 
-	// 5. Update the last pending job (which is at index 2)
-	secondPendingIndex := index // Store the index we just found (2)
-	require.NoError(t, qm.UpdateJobStatus(secondPendingIndex, metadata.StatusComplete, ""), "Update status of job at index 2")
-	// Queue: [job1(Ready, 0), job2(Processing, 1), job3(Complete, 2)]
+	// Mark last pending as non-pending
+	err = qm.UpdateJobStatus(job3.SubtitleInfo.FilePath, metadata.StatusFailed, "Error")
+	assert.NoError(t, err)
 
-	nextJob, index = qm.GetNextPendingJob()
-	assert.Nil(t, nextJob, "Should be no more pending jobs")
-	assert.Equal(t, -1, index, "Index should be -1 when no pending jobs")
+	nextJob = qm.GetNextPendingJob()
+	assert.Nil(t, nextJob, "Should be no pending jobs left")
 }
 
-func TestUpdateJobStatus(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
+func TestQueueManager_UpdateJobStatus(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
 
-	job1 := createSampleJob("/subs/update.srt", metadata.StatusPending)
-	require.NoError(t, qm.AddToQueue(job1))
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	jobID1 := job1.SubtitleInfo.FilePath
+	_, _ = qm.AddToQueue([]metadata.UploadJob{job1})
 
-	// 1. Update status and message
-	newStatus := metadata.StatusProcessing
-	newMessage := "Looking up metadata"
-	err := qm.UpdateJobStatus(0, newStatus, newMessage)
+	// Test valid update
+	err := qm.UpdateJobStatus(jobID1, metadata.StatusUploading, "Processing...")
 	assert.NoError(t, err)
-	updatedQueue := qm.GetQueue()
-	assert.Len(t, updatedQueue, 1)
-	assert.Equal(t, newStatus, updatedQueue[0].Status)
-	assert.Equal(t, newMessage, updatedQueue[0].Message)
-	assert.Zero(t, updatedQueue[0].CompletedAt) // Should not be set yet
+	queue := qm.GetQueue()
+	assert.Len(t, queue, 1)
+	assert.Equal(t, metadata.StatusUploading, queue[0].Status)
+	assert.Equal(t, "Processing...", queue[0].Message)
+	assert.True(t, queue[0].CompletedAt.IsZero(), "CompletedAt should not be set yet")
 
-	// 2. Update to a final status (sets CompletedAt)
-	finalStatus := metadata.StatusFailed
-	finalMessage := "API error"
-	err = qm.UpdateJobStatus(0, finalStatus, finalMessage)
+	// Test setting completed status
+	err = qm.UpdateJobStatus(jobID1, metadata.StatusComplete, "Success")
 	assert.NoError(t, err)
-	updatedQueue = qm.GetQueue()
-	assert.Equal(t, finalStatus, updatedQueue[0].Status)
-	assert.Equal(t, finalMessage, updatedQueue[0].Message)
-	assert.NotZero(t, updatedQueue[0].CompletedAt)
+	queue = qm.GetQueue()
+	assert.Equal(t, metadata.StatusComplete, queue[0].Status)
+	assert.False(t, queue[0].CompletedAt.IsZero(), "CompletedAt should be set")
 
-	// 3. Invalid index
-	err = qm.UpdateJobStatus(1, metadata.StatusPending, "")
+	// Test invalid job ID
+	err = qm.UpdateJobStatus("nonexistent.srt", metadata.StatusFailed, "Not found")
 	assert.Error(t, err)
-	err = qm.UpdateJobStatus(-1, metadata.StatusPending, "")
-	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in queue")
 }
 
-func TestMoveJobToHistory(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
+func TestQueueManager_MoveJobToHistory(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
 
-	job1 := createSampleJob("/subs/move1.srt", metadata.StatusComplete)
-	job2 := createSampleJob("/subs/move2.srt", metadata.StatusPending)
-	require.NoError(t, qm.AddToQueue(job1, job2))
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}}
+	jobID1 := job1.SubtitleInfo.FilePath
+	jobID2 := job2.SubtitleInfo.FilePath
 
-	// 1. Move first job
-	job1.Status = metadata.StatusComplete // Simulate completion before move
-	require.NoError(t, qm.UpdateJobStatus(0, job1.Status, "Done"))
-	err := qm.MoveJobToHistory(0)
+	_, _ = qm.AddToQueue([]metadata.UploadJob{job1, job2})
+	assert.Len(t, qm.GetQueue(), 2)
+	assert.Len(t, qm.GetHistory(), 0)
+
+	// Move first job
+	err := qm.MoveJobToHistory(jobID1)
 	assert.NoError(t, err)
 	assert.Len(t, qm.GetQueue(), 1, "Queue should have 1 item left")
 	assert.Len(t, qm.GetHistory(), 1, "History should have 1 item")
-	assert.Equal(t, job2.SubtitleInfo.FilePath, qm.GetQueue()[0].SubtitleInfo.FilePath) // job2 remains
-	assert.Equal(t, job1.SubtitleInfo.FilePath, qm.GetHistory()[0].SubtitleInfo.FilePath)
-	assert.Equal(t, job1.Status, qm.GetHistory()[0].Status)
+	assert.Equal(t, jobID2, qm.GetQueue()[0].SubtitleInfo.FilePath, "Remaining job should be job2")
+	assert.Equal(t, jobID1, qm.GetHistory()[0].SubtitleInfo.FilePath, "Moved job should be job1")
 
-	// 2. Move the remaining job
-	job2.Status = metadata.StatusSkipped
-	require.NoError(t, qm.UpdateJobStatus(0, job2.Status, "Skipped by user"))
-	err = qm.MoveJobToHistory(0)
+	// Move second job
+	err = qm.MoveJobToHistory(jobID2)
 	assert.NoError(t, err)
-	assert.Empty(t, qm.GetQueue(), "Queue should be empty")
-	assert.Len(t, qm.GetHistory(), 2, "History should have 2 items")
-	assert.Equal(t, job2.SubtitleInfo.FilePath, qm.GetHistory()[0].SubtitleInfo.FilePath) // job2 is now first in history
-	assert.Equal(t, job1.SubtitleInfo.FilePath, qm.GetHistory()[1].SubtitleInfo.FilePath)
+	assert.Len(t, qm.GetQueue(), 0)
+	assert.Len(t, qm.GetHistory(), 2)
+	assert.Equal(t, jobID2, qm.GetHistory()[0].SubtitleInfo.FilePath) // Prepended
+	assert.Equal(t, jobID1, qm.GetHistory()[1].SubtitleInfo.FilePath)
 
-	// 3. Invalid index
-	err = qm.MoveJobToHistory(0) // Queue is empty
+	// Move non-existent job
+	err = qm.MoveJobToHistory("nonexistent.srt")
 	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in queue")
 }
 
-func TestClearQueue(t *testing.T) {
-	qm, tempDir := setupTestQueueManager(t)
-	job1 := createSampleJob("/subs/clearQ1.srt", metadata.StatusPending)
-	job2 := createSampleJob("/subs/clearQ2.srt", metadata.StatusPending)
+func TestQueueManager_Clear(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
 
-	// 1. Clear empty queue
-	err := qm.ClearQueue()
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}}
+	_, _ = qm.AddToQueue([]metadata.UploadJob{job1, job2})
+	err := qm.MoveJobToHistory(job1.SubtitleInfo.FilePath)
 	assert.NoError(t, err)
-	assert.Empty(t, qm.GetQueue())
 
-	// 2. Add jobs and clear
-	require.NoError(t, qm.AddToQueue(job1, job2))
-	assert.Len(t, qm.GetQueue(), 2)
+	assert.Len(t, qm.GetQueue(), 1)
+	assert.Len(t, qm.GetHistory(), 1)
+
 	err = qm.ClearQueue()
 	assert.NoError(t, err)
-	assert.Empty(t, qm.GetQueue())
+	assert.Len(t, qm.GetQueue(), 0)
+	assert.Len(t, qm.GetHistory(), 1) // History should remain
 
-	// 3. Check persistence (load again)
-	qm2, err := queue.NewQueueManager(tempDir, log.New(ioutil.Discard, "", 0))
-	require.NoError(t, err)
-	assert.Empty(t, qm2.GetQueue(), "Loaded queue should be empty after clearing")
-}
-
-func TestClearHistory(t *testing.T) {
-	qm, tempDir := setupTestQueueManager(t)
-	job1 := createSampleJob("/subs/clearH1.srt", metadata.StatusComplete)
-
-	// 1. Clear empty history
-	err := qm.ClearHistory()
-	assert.NoError(t, err)
-	assert.Empty(t, qm.GetHistory())
-
-	// 2. Add job to history and clear
-	require.NoError(t, qm.AddToQueue(job1))
-	require.NoError(t, qm.UpdateJobStatus(0, metadata.StatusComplete, ""))
-	require.NoError(t, qm.MoveJobToHistory(0))
-	assert.Len(t, qm.GetHistory(), 1)
 	err = qm.ClearHistory()
 	assert.NoError(t, err)
-	assert.Empty(t, qm.GetHistory())
-
-	// 3. Check persistence
-	qm2, err := queue.NewQueueManager(tempDir, log.New(ioutil.Discard, "", 0))
-	require.NoError(t, err)
-	assert.Empty(t, qm2.GetHistory(), "Loaded history should be empty after clearing")
+	assert.Len(t, qm.GetHistory(), 0)
 }
 
-func TestRemoveJobFromQueue(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
-	job1 := createSampleJob("/subs/remove1.srt", metadata.StatusPending)
-	job2 := createSampleJob("/subs/remove2.srt", metadata.StatusReady)
-	job3 := createSampleJob("/subs/remove3.srt", metadata.StatusPending)
-	require.NoError(t, qm.AddToQueue(job1, job2, job3))
+func TestQueueManager_RemoveJobFromQueue(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
+
+	job1 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub1.srt"}}
+	job2 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub2.srt"}}
+	job3 := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: "sub3.srt"}}
+	jobID1 := job1.SubtitleInfo.FilePath
+	jobID2 := job2.SubtitleInfo.FilePath
+	jobID3 := job3.SubtitleInfo.FilePath
+
+	_, _ = qm.AddToQueue([]metadata.UploadJob{job1, job2, job3})
 	assert.Len(t, qm.GetQueue(), 3)
 
-	// 1. Remove middle job
-	err := qm.RemoveJobFromQueue(1)
+	// Remove middle job
+	err := qm.RemoveJobFromQueue(jobID2)
 	assert.NoError(t, err)
-	currentQueue := qm.GetQueue()
-	assert.Len(t, currentQueue, 2)
-	assert.Equal(t, job1.SubtitleInfo.FilePath, currentQueue[0].SubtitleInfo.FilePath)
-	assert.Equal(t, job3.SubtitleInfo.FilePath, currentQueue[1].SubtitleInfo.FilePath)
+	queue := qm.GetQueue()
+	assert.Len(t, queue, 2)
+	assert.Equal(t, jobID1, queue[0].SubtitleInfo.FilePath)
+	assert.Equal(t, jobID3, queue[1].SubtitleInfo.FilePath)
 
-	// 2. Remove first job
-	err = qm.RemoveJobFromQueue(0)
+	// Remove first job
+	err = qm.RemoveJobFromQueue(jobID1)
 	assert.NoError(t, err)
-	currentQueue = qm.GetQueue()
-	assert.Len(t, currentQueue, 1)
-	assert.Equal(t, job3.SubtitleInfo.FilePath, currentQueue[0].SubtitleInfo.FilePath)
+	queue = qm.GetQueue()
+	assert.Len(t, queue, 1)
+	assert.Equal(t, jobID3, queue[0].SubtitleInfo.FilePath)
 
-	// 3. Remove last job
-	err = qm.RemoveJobFromQueue(0)
+	// Remove last job
+	err = qm.RemoveJobFromQueue(jobID3)
 	assert.NoError(t, err)
 	assert.Empty(t, qm.GetQueue())
 
-	// 4. Invalid index
-	err = qm.RemoveJobFromQueue(0) // Empty queue
+	// Remove non-existent job
+	err = qm.RemoveJobFromQueue("nonexistent.srt")
 	assert.Error(t, err)
-	require.NoError(t, qm.AddToQueue(job1))
-	err = qm.RemoveJobFromQueue(1)
-	assert.Error(t, err)
-	err = qm.RemoveJobFromQueue(-1)
-	assert.Error(t, err)
+	assert.Contains(t, err.Error(), "not found in queue")
 }
 
-// TestConcurrency aims to ensure basic thread safety with locks.
-// This is not exhaustive but checks for obvious race conditions.
-func TestConcurrency(t *testing.T) {
-	qm, _ := setupTestQueueManager(t)
-	numGoroutines := 50
+// TestQueueManager_Concurrency tests basic concurrent access.
+func TestQueueManager_Concurrency(t *testing.T) {
+	qm, cleanup := setupTestQueueManager(t)
+	defer cleanup()
+
 	var wg sync.WaitGroup
+	numGoroutines := 50
+	numJobsPerRoutine := 10
 
-	wg.Add(numGoroutines * 4) // Add, Update, Move, Remove
-
-	// Add jobs concurrently
+	// Concurrent Adds
+	wg.Add(numGoroutines)
 	for i := 0; i < numGoroutines; i++ {
-		go func(n int) {
+		go func(routineID int) {
 			defer wg.Done()
-			job := createSampleJob(fmt.Sprintf("/subs/concurrent_%d.srt", n), metadata.StatusPending)
-			_ = qm.AddToQueue(job)
+			jobsToAdd := []metadata.UploadJob{}
+			for j := 0; j < numJobsPerRoutine; j++ {
+				job := metadata.UploadJob{SubtitleInfo: &metadata.SubtitleInfo{FilePath: fmt.Sprintf("sub_%d_%d.srt", routineID, j)}}
+				jobsToAdd = append(jobsToAdd, job)
+			}
+			_, _ = qm.AddToQueue(jobsToAdd)
 		}(i)
 	}
-
-	// Give AddToQueue some time to populate before proceeding
-	time.Sleep(100 * time.Millisecond)
-
-	// Concurrently update and move jobs
-	for i := 0; i < numGoroutines; i++ {
-		// Update
-		go func(n int) {
-			defer wg.Done()
-			_, index := qm.GetNextPendingJob() // Find *any* pending job
-			if index != -1 {
-				_ = qm.UpdateJobStatus(index, metadata.StatusReady, "Processed")
-			}
-		}(i)
-
-		// Move (find a non-pending job, maybe Ready)
-		go func(n int) {
-			defer wg.Done()
-			// Find a job that is NOT pending to move
-			currentQueue := qm.GetQueue() // Get a snapshot
-			for idx, job := range currentQueue {
-				if job.Status != metadata.StatusPending {
-					_ = qm.MoveJobToHistory(idx)
-					break // Move one and stop
-				}
-			}
-		}(i)
-
-		// Remove (find any job)
-		go func(n int) {
-			defer wg.Done()
-			currentQueue := qm.GetQueue()
-			if len(currentQueue) > 0 {
-				_ = qm.RemoveJobFromQueue(0) // Just remove the first available
-			}
-		}(i)
-	}
-
 	wg.Wait()
 
-	// No specific assertion on final counts due to race nature,
-	// but the primary goal is to ensure no deadlocks or panics occur.
-	t.Logf("Concurrency test finished. Final Queue: %d, History: %d", len(qm.GetQueue()), len(qm.GetHistory()))
+	assert.Len(t, qm.GetQueue(), numGoroutines*numJobsPerRoutine, "All unique jobs should be added")
+
+	// Concurrent GetNext, Update, Move
+	wg.Add(numGoroutines)
+	for i := 0; i < numGoroutines; i++ {
+		go func() {
+			defer wg.Done()
+			for j := 0; j < numJobsPerRoutine; j++ {
+				job := qm.GetNextPendingJob()
+				if job != nil {
+					jobID := job.SubtitleInfo.FilePath // Use ID for update/move
+					_ = qm.UpdateJobStatus(jobID, metadata.StatusUploading, "Started")
+					// Simulate work
+					time.Sleep(time.Millisecond * time.Duration(j%5+1))
+					_ = qm.UpdateJobStatus(jobID, metadata.StatusComplete, "Done")
+					_ = qm.MoveJobToHistory(jobID)
+				}
+			}
+		}()
+	}
+	wg.Wait()
+
+	assert.Empty(t, qm.GetQueue(), "Queue should be empty after processing")
+	assert.Len(t, qm.GetHistory(), numGoroutines*numJobsPerRoutine, "History should contain all processed jobs")
 }

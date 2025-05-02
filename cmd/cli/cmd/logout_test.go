@@ -10,60 +10,63 @@ import (
 	"github.com/angelospk/osuploadergui/pkg/core/opensubtitles"
 	"github.com/spf13/viper"
 	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/mock"
 )
 
-// Mock Client Implementation (moved before tests for clarity)
+// MockOSClient is a mock implementation of metadata.OpenSubtitlesClient using testify/mock
 type MockOSClient struct {
-	LoginCalled      bool
-	LogoutCalled     bool
-	LogoutShouldFail bool
+	mock.Mock
+	// Keep specific fields if needed for non-mocked behavior tests, but prefer mock.Mock
+	// LoginCalled      bool
+	// LogoutCalled     bool
+	// LogoutShouldFail bool
 }
 
-var _ metadata.OpenSubtitlesClient = (*MockOSClient)(nil) // Ensure it satisfies the interface defined in metadata
+// Ensure MockOSClient satisfies the interface defined in metadata
+var _ metadata.OpenSubtitlesClient = (*MockOSClient)(nil)
 
-// Login mock - signature matches opensubtitles.Client.Login
-// Note: Login requires username/password, not used by logout flow directly
+// --- Mock Methods --- //
+
 func (m *MockOSClient) Login(ctx context.Context, username, password string) (*opensubtitles.LoginResponse, error) {
-	m.LoginCalled = true
-	// Return a dummy response or nil based on interface needs
-	return &opensubtitles.LoginResponse{Token: "mock-token"}, nil
-}
-
-// Logout mock - signature matches opensubtitles.Client.Logout
-func (m *MockOSClient) Logout(ctx context.Context) error {
-	m.LogoutCalled = true
-	if m.LogoutShouldFail {
-		return assert.AnError // Use testify's error for mocks
+	// This method is not strictly needed by search/logout tests using API key auth,
+	// but is part of the interface potentially used elsewhere.
+	args := m.Called(ctx, username, password)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
 	}
-	return nil
+	return args.Get(0).(*opensubtitles.LoginResponse), args.Error(1)
 }
 
-// GetUserInfo mock - signature matches opensubtitles.Client.GetUserInfo
+func (m *MockOSClient) Logout(ctx context.Context) error {
+	args := m.Called(ctx)
+	return args.Error(0)
+}
+
 func (m *MockOSClient) GetUserInfo(ctx context.Context) (*opensubtitles.UserInfo, error) {
-	return &opensubtitles.UserInfo{Username: "mock", Level: "tester"}, nil
+	args := m.Called(ctx)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*opensubtitles.UserInfo), args.Error(1)
 }
 
-// SearchFeatures mock - signature matches opensubtitles.Client.SearchFeatures
 func (m *MockOSClient) SearchFeatures(ctx context.Context, params map[string]string) (*opensubtitles.FeaturesResponse, error) {
-	return nil, nil // Dummy response
+	args := m.Called(ctx, params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*opensubtitles.FeaturesResponse), args.Error(1)
 }
 
-// SearchSubtitles mock - signature matches opensubtitles.Client.SearchSubtitles
 func (m *MockOSClient) SearchSubtitles(ctx context.Context, params map[string]string) (*opensubtitles.SubtitleSearchResponse, error) {
-	return nil, nil // Dummy response
+	args := m.Called(ctx, params)
+	if args.Get(0) == nil {
+		return nil, args.Error(1)
+	}
+	return args.Get(0).(*opensubtitles.SubtitleSearchResponse), args.Error(1)
 }
 
-// RequestDownload mock - signature matches opensubtitles.Client.RequestDownload
-func (m *MockOSClient) RequestDownload(ctx context.Context, reqData opensubtitles.DownloadRequest) (*opensubtitles.DownloadResponse, error) {
-	return nil, nil // Dummy response
-}
-
-// UploadSubtitle mock - signature matches opensubtitles.Client.UploadSubtitle
-func (m *MockOSClient) UploadSubtitle(ctx context.Context, params opensubtitles.UploadParams, subtitleFilePath string) (*opensubtitles.UploadResponse, error) {
-	return nil, nil // Dummy response
-}
-
-// --- End Mock Client ---
+// --- End Mock Client Methods ---
 
 // TestLogoutCommand_Success uses RunE
 // It assumes the /logout endpoint might succeed even with just an API key (no JWT)

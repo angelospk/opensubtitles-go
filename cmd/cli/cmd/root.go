@@ -1,8 +1,12 @@
 package cmd
 
 import (
+	"bufio" // Added for reading user input
 	"fmt"
+	"log"
 	"os"
+	"path/filepath" // Added for creating config path
+	"strings"       // Added for trimming input
 
 	"github.com/spf13/cobra"
 	"github.com/spf13/viper" // Import viper
@@ -30,9 +34,12 @@ var (
 		Short: "A CLI tool to interact with OpenSubtitles and upload subtitles.",
 		Long: `osuploadercli allows you to search for subtitles on OpenSubtitles,
 manage an upload queue, and upload subtitles via the command line.`,
-		// Uncomment the following line if your bare application
-		// has an action associated with it:
-		// Run: func(cmd *cobra.Command, args []string) { },
+		// PersistentPreRun ensures configuration is checked before any command runs.
+		// We use PersistentPreRun instead of relying solely on initConfig via OnInitialize
+		// to ensure the prompt logic runs *after* Viper has loaded everything.
+		PersistentPreRun: func(cmd *cobra.Command, args []string) {
+			checkAndPromptAPIKey()
+		},
 	}
 )
 
@@ -59,12 +66,13 @@ func init() {
 	// rootCmd.Flags().BoolP("toggle", "t", false, "Help message for toggle") // Example flag removed
 
 	// Add subcommands here later
-	// rootCmd.AddCommand(uploadCmd)
-	// rootCmd.AddCommand(searchCmd)
-	// rootCmd.AddCommand(loginCmd)
+	// RootCmd.AddCommand(uploadCmd)
+	// RootCmd.AddCommand(searchCmd)
+	// RootCmd.AddCommand(loginCmd)
 }
 
 // initConfig reads in config file and ENV variables if set.
+// This runs *before* PersistentPreRun.
 func initConfig() {
 	if cfgFile != "" {
 		// Use config file from the flag.
@@ -74,31 +82,79 @@ func initConfig() {
 		home, err := os.UserHomeDir()
 		cobra.CheckErr(err) // Use cobra helper for error checking
 
-		// Search config in home directory OR current directory
-		viper.AddConfigPath(home)             // Add home directory
-		viper.AddConfigPath(".")              // Add current directory
-		viper.SetConfigType("yaml")           // Set config type
-		viper.SetConfigName(".osuploadercli") // Look for .osuploadercli.yaml
-		viper.SetConfigName("config")         // Also look for config.yaml
+		// --- Simplified Config Path Logic ---
+		configDir := filepath.Join(home, ".osuploadercli")
+		viper.AddConfigPath(configDir) // Add $HOME/.osuploadercli
+		viper.AddConfigPath(".")       // Add current directory as fallback/alternative
+		viper.SetConfigType("yaml")    // REQUIRED if the config file does not have the extension in the name
+		viper.SetConfigName("config")  // Look for config.yaml (or config)
+		// --- End Simplified Logic ---
 	}
 
 	viper.AutomaticEnv()             // read in environment variables that match
-	viper.SetEnvPrefix("OSUPLOADER") // Set env prefix, e.g., OSUPLOADER_TRAKT_CLIENTID
-	// Example binding specific env vars if needed, but AutomaticEnv + Prefix is usually sufficient
-	// viper.BindEnv(CfgKeyOSAPIKey, "OPENSUBTITLES_API_KEY")
-	// viper.BindEnv(CfgKeyTraktClientID, "TRAKT_CLIENT_ID")
+	viper.SetEnvPrefix("OSUPLOADER") // Set env prefix, e.g., OSUPLOADER_OPENSUBTITLES_APIKEY
 
 	// If a config file is found, read it in.
-	if err := viper.ReadInConfig(); err == nil {
-		fmt.Fprintln(os.Stderr, "Using config file:", viper.ConfigFileUsed())
-	} else {
+	if err := viper.ReadInConfig(); err != nil {
 		if _, ok := err.(viper.ConfigFileNotFoundError); ok {
-			// Config file not found; ignore error if desired
-			fmt.Fprintln(os.Stderr, "Config file not found, relying on ENV variables.")
+			// Config file not found; ignore error, checkAndPromptAPIKey will handle it
+		} else if os.IsNotExist(err) {
+			// Handle case where config directory might not exist yet
 		} else {
 			// Config file was found but another error was produced
-			fmt.Fprintf(os.Stderr, "Error reading config file %s: %v\n", viper.ConfigFileUsed(), err)
+			fmt.Fprintf(os.Stderr, "Error reading config file (%s): %v\n", viper.ConfigFileUsed(), err)
 		}
+	}
+}
+
+// checkAndPromptAPIKey checks if the API key is set and prompts if not.
+// This runs via PersistentPreRun after initConfig.
+func checkAndPromptAPIKey() {
+	apiKey := viper.GetString(CfgKeyOSAPIKey)
+	if apiKey == "" {
+		fmt.Println("OpenSubtitles API Key not found.")
+		fmt.Print("Please enter your API Key: ")
+
+		reader := bufio.NewReader(os.Stdin)
+		inputKey, err := reader.ReadString('\n')
+		if err != nil {
+			log.Fatalf("Failed to read API Key: %v", err)
+		}
+		inputKey = strings.TrimSpace(inputKey)
+
+		if inputKey == "" {
+			log.Fatalf("API Key cannot be empty.")
+		}
+
+		// Set the key in viper instance for the current run (though we exit)
+		viper.Set(CfgKeyOSAPIKey, inputKey)
+
+		// --- Standardized Save Path ---
+		home, err := os.UserHomeDir()
+		if err != nil {
+			log.Fatalf("Could not get home directory: %v", err)
+		}
+		configDir := filepath.Join(home, ".osuploadercli")
+		configPath := filepath.Join(configDir, "config.yaml") // Standardized filename
+
+		// Create the directory if it doesn't exist
+		if err := os.MkdirAll(configDir, 0750); err != nil {
+			log.Fatalf("Could not create config directory %s: %v", configDir, err)
+		}
+
+		// Ensure the settings map reflects the nested structure before writing
+		// viper.Set should handle this, but let's be explicit if issues persist.
+		// Example: viper.Set("opensubtitles", map[string]string{"apikey": inputKey})
+
+		// Write the config file using the current viper settings
+		// Note: WriteConfigAs saves *all* current viper settings, not just the one we set.
+		if err := viper.WriteConfigAs(configPath); err != nil {
+			log.Fatalf("Failed to save API Key to %s: %v", configPath, err)
+		}
+
+		fmt.Printf("API Key saved successfully to %s\n", configPath)
+		fmt.Println("Please re-run your command.")
+		os.Exit(0) // Exit after saving
 	}
 }
 

@@ -2,8 +2,8 @@ package processor_test
 
 import (
 	"context"
+	"errors"
 	"io/ioutil"
-	"log"
 	"os"
 	"path/filepath"
 	"testing"
@@ -13,6 +13,7 @@ import (
 	"github.com/angelospk/osuploadergui/pkg/core/opensubtitles"
 	"github.com/angelospk/osuploadergui/pkg/core/trakt"
 	"github.com/angelospk/osuploadergui/pkg/processor"
+	log "github.com/sirupsen/logrus" // Import logrus
 
 	// "osuploadergui/pkg/core/fileops" // Add imports as needed
 	// "osuploadergui/pkg/core/opensubtitles"
@@ -25,6 +26,7 @@ import (
 
 // --- Mocks for the individual client interfaces --- //
 
+// MockOpenSubtitlesClient specific to processor tests
 type MockOpenSubtitlesClient struct {
 	SearchFeaturesFunc func(ctx context.Context, params map[string]string) (*opensubtitles.FeaturesResponse, error)
 }
@@ -36,7 +38,12 @@ func (m *MockOpenSubtitlesClient) SearchFeatures(ctx context.Context, params map
 	if m.SearchFeaturesFunc != nil {
 		return m.SearchFeaturesFunc(ctx, params)
 	}
-	return &opensubtitles.FeaturesResponse{}, nil // Default mock behavior
+	return nil, errors.New("SearchFeaturesFunc not set")
+}
+
+// Add SearchSubtitles to satisfy the interface (won't be called by processor tests)
+func (m *MockOpenSubtitlesClient) SearchSubtitles(ctx context.Context, params map[string]string) (*opensubtitles.SubtitleSearchResponse, error) {
+	return nil, errors.New("SearchSubtitles not implemented in processor mock")
 }
 
 type MockTraktClient struct {
@@ -50,7 +57,7 @@ func (m *MockTraktClient) SearchTrakt(ctx context.Context, queryType string, que
 	if m.SearchTraktFunc != nil {
 		return m.SearchTraktFunc(ctx, queryType, query)
 	}
-	return []trakt.SearchResult{}, nil // Default mock behavior
+	return nil, errors.New("SearchTraktFunc not set")
 }
 
 type MockIMDbClient struct {
@@ -64,7 +71,7 @@ func (m *MockIMDbClient) SearchIMDBSuggestions(ctx context.Context, query string
 	if m.SearchIMDBSuggestionsFunc != nil {
 		return m.SearchIMDBSuggestionsFunc(ctx, query)
 	}
-	return []imdb.IMDBSuggestion{}, nil // Default mock behavior
+	return nil, errors.New("SearchIMDBSuggestions not implemented in processor mock")
 }
 
 // --- End Mocks --- //
@@ -104,12 +111,15 @@ func TestCreateJobsFromDirectory_Basic(t *testing.T) {
 		IMDbClient:  mockIMDbClient,  // This now satisfies the field type metadata.IMDbClient
 	}
 
-	logger := log.New(ioutil.Discard, "TEST: ", log.LstdFlags)     // Use standard log with ioutil.Discard
+	logger := log.New()
+	logger.SetOutput(os.Stdout) // See logs during test run
+	logger.SetLevel(log.DebugLevel)
+
 	processor := processor.NewProcessor(apiProviderStruct, logger) // Pass the correctly typed struct and logger
 
 	// --- Run CreateJobsFromDirectory ---
-	ctx := context.Background()                                 // Create context
-	jobs, err := processor.CreateJobsFromDirectory(ctx, tmpDir) // Use correct method name
+	ctx := context.Background()                                        // Create context
+	jobs, err := processor.CreateJobsFromDirectory(ctx, tmpDir, false) // Use correct method name and recursive=false
 
 	// --- Assertions ---
 	require.NoError(t, err, "CreateJobsFromDirectory returned an error")

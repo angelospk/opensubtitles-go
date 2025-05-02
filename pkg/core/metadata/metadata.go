@@ -96,6 +96,8 @@ const (
 type OpenSubtitlesClient interface {
 	// SearchFeatures searches for features (movies/episodes) on OpenSubtitles.
 	SearchFeatures(ctx context.Context, params map[string]string) (*opensubtitles.FeaturesResponse, error)
+	// SearchSubtitles searches for subtitles on OpenSubtitles.
+	SearchSubtitles(ctx context.Context, params map[string]string) (*opensubtitles.SubtitleSearchResponse, error)
 	// Add other methods used by ConsolidateMetadata if any (e.g., GetUserInfo?)
 }
 

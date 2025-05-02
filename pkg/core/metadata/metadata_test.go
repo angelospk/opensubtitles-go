@@ -31,6 +31,13 @@ func (m *MockOpenSubtitlesClient) SearchFeatures(ctx context.Context, params map
 	return nil, errors.New("SearchFeaturesFunc not set in mock")
 }
 
+// Add SearchSubtitles to satisfy the interface
+func (m *MockOpenSubtitlesClient) SearchSubtitles(ctx context.Context, params map[string]string) (*opensubtitles.SubtitleSearchResponse, error) {
+	// For metadata tests, this likely won't be called, return dummy data or error
+	// If a test *needs* this, it should set a specific Func like SearchFeaturesFunc
+	return nil, errors.New("SearchSubtitles not implemented in this specific mock instance")
+}
+
 // MockTraktClient is a mock implementation of metadata.TraktClient.
 type MockTraktClient struct {
 	SearchTraktFunc     func(ctx context.Context, queryType string, query string) ([]trakt.SearchResult, error)
