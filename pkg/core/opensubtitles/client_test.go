@@ -295,7 +295,7 @@ func TestClient_SearchFeatures_Success(t *testing.T) {
 					Attributes: FeatureAttributes{
 						Title:     "Fight Club",
 						FeatureID: "12345",
-						Year:      1999,
+						Year:      "1999",
 						ImdbID:    137523,
 					},
 				},
@@ -337,8 +337,8 @@ func TestClient_SearchFeatures_Success(t *testing.T) {
 	if feature.Attributes.Title != "Fight Club" {
 		t.Errorf("Expected feature title 'Fight Club', got '%s'", feature.Attributes.Title)
 	}
-	if feature.Attributes.Year != 1999 {
-		t.Errorf("Expected feature year 1999, got %d", feature.Attributes.Year)
+	if feature.Attributes.Year != "1999" {
+		t.Errorf("Expected feature year \"1999\", got %s", feature.Attributes.Year)
 	}
 }
 
