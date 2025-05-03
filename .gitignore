@@ -10,7 +10,7 @@ memory-bank.mdc
 *.dll
 *.so
 *.dylib
-
+.env
 # Build artifacts
 /build/
 
