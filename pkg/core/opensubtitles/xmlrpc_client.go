@@ -1,12 +1,15 @@
 package opensubtitles
 
 import (
+	"bytes"
+	"compress/gzip"
 	"crypto/md5"
-	"crypto/tls"
+	"encoding/base64"
 	"fmt"
 	"net/http"
 	"net/rpc"
-	"net/url" // Re-added import
+	"net/url"
+	"time"
 
 	// "time" // Removed unused import
 
@@ -30,15 +33,21 @@ type XmlRpcClient struct {
 
 // NewXmlRpcClient creates a new XML-RPC client.
 func NewXmlRpcClient() (*XmlRpcClient, error) {
-	// Allow insecure connections for potential local testing or specific environments if needed
-	// In production, you might want to enforce stricter TLS checks.
+	// Create a default HTTP transport (without InsecureSkipVerify)
 	tr := &http.Transport{
-		TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Be cautious with this in production
+		// TLSClientConfig: &tls.Config{InsecureSkipVerify: true}, // Removed: Use default secure TLS
+		Proxy: http.ProxyFromEnvironment, // Ensure proxy settings are respected
 	}
-	// httpClient := &http.Client{Transport: tr} // Removed unused variable
 
-	// Create the kolo/xmlrpc client
-	client, err := xmlrpc.NewClient(xmlRpcEndpoint, tr) // Pass tr (RoundTripper) instead of httpClient
+	// Create an HTTP client with a timeout
+	httpClient := &http.Client{
+		Transport: tr,
+		Timeout:   30 * time.Second, // Add a reasonable timeout
+	}
+
+	// Create the kolo/xmlrpc client using the custom HTTP client's transport
+	// Note: kolo/xmlrpc expects a RoundTripper, which httpClient.Transport is.
+	client, err := xmlrpc.NewClient(xmlRpcEndpoint, httpClient.Transport)
 	if err != nil {
 		return nil, fmt.Errorf("error creating XML-RPC client: %w", err)
 	}
@@ -187,31 +196,35 @@ type XmlRpcUploadSubtitlesBaseInfo struct {
 }
 
 // XmlRpcUploadSubtitlesCD holds the subtitle file details for UploadSubtitles.
-// Fields derived from JS arrangeUploadData function. Sent as strings.
+// Fields derived from JS arrangeUploadData function and XML-RPC docs. Types adjusted.
 type XmlRpcUploadSubtitlesCD struct {
-	SubHash       string `xmlrpc:"subhash"`
-	SubFilename   string `xmlrpc:"subfilename"`
-	SubContent    string `xmlrpc:"subcontent"` // Base64 encoded content
-	MovieByteSize string `xmlrpc:"moviebytesize,omitempty"`
-	MovieHash     string `xmlrpc:"moviehash,omitempty"`
-	MovieFilename string `xmlrpc:"moviefilename,omitempty"`
-	MovieFPS      string `xmlrpc:"moviefps,omitempty"`
-	MovieFrames   string `xmlrpc:"movieframes,omitempty"`
-	MovieTimeMS   string `xmlrpc:"movietimems,omitempty"`
+	SubHash       string  `xmlrpc:"subhash"`
+	SubFilename   string  `xmlrpc:"subfilename"`
+	MovieHash     string  `xmlrpc:"moviehash,omitempty"`     // Added omitempty
+	MovieByteSize float64 `xmlrpc:"moviebytesize,omitempty"` // Added omitempty
+	MovieTimeMS   int     `xmlrpc:"movietimems,omitempty"`   // Already had omitempty
+	MovieFrames   int     `xmlrpc:"movieframes,omitempty"`   // Already had omitempty
+	MovieFPS      float64 `xmlrpc:"moviefps,omitempty"`      // Already had omitempty
+	MovieFilename string  `xmlrpc:"moviefilename,omitempty"` // Added omitempty
+	SubContent    string  `xmlrpc:"subcontent"`              // Gzipped + Base64 encoded content
 }
 
 // XmlRpcUploadSubtitlesParams is the top-level structure sent to UploadSubtitles.
+// Adjusted to potentially hold multiple CDs in the future.
 type XmlRpcUploadSubtitlesParams struct {
 	BaseInfo XmlRpcUploadSubtitlesBaseInfo `xmlrpc:"baseinfo"`
-	CD1      XmlRpcUploadSubtitlesCD       `xmlrpc:"cd1"` // Assumes only one CD/file per upload
+	// Use a map to represent cd1, cd2, etc., matching the XML-RPC structure
+	// The key will be "cd1", "cd2", etc.
+	CDs map[string]XmlRpcUploadSubtitlesCD `xmlrpc:""`
 }
 
 // XmlRpcUploadSubtitlesResponse represents the structure from UploadSubtitles.
-// Based on JS checks (status, data as string URL).
+// Based on XML-RPC docs (status, data string URL, boolean subtitles?).
 type XmlRpcUploadSubtitlesResponse struct {
-	Status  string  `xmlrpc:"status"`
-	Data    string  `xmlrpc:"data"` // Expected to be the subtitle page URL string
-	Seconds float64 `xmlrpc:"seconds"`
+	Status    string  `xmlrpc:"status"`
+	Data      string  `xmlrpc:"data"`      // Expected to be the subtitle page URL string
+	Subtitles bool    `xmlrpc:"subtitles"` // Added based on docs, might not be reliable
+	Seconds   float64 `xmlrpc:"seconds"`
 }
 
 // --- End UploadSubtitles Structs ---
@@ -298,7 +311,7 @@ func (c *XmlRpcClient) TryUploadSubtitles(params XmlRpcTryUploadParams) (*XmlRpc
 	if err != nil {
 		return nil, fmt.Errorf("xmlrpc TryUploadSubtitles call failed: %w", err)
 	}
-	log.Printf("[DEBUG] Raw TryUploadSubtitles response: %+v (type: %T)", rawResp, rawResp)
+	// log.Printf("[DEBUG] Raw TryUploadSubtitles response: %+v (type: %T)", rawResp, rawResp) // Commented out verbose log
 
 	// Try to interpret the response as a map (struct) or bool
 	switch v := rawResp.(type) {
@@ -349,33 +362,40 @@ func (c *XmlRpcClient) UploadSubtitles(params XmlRpcUploadSubtitlesParams) (*Xml
 		return nil, errors.ErrNotLoggedIn
 	}
 
-	// Prepare the structure for UploadSubtitles
-	// This involves base64 encoded, gzipped subtitle content.
-	subContentMap := make(map[string]interface{})
-	subContentMap["idsubtitlefile"] = params.BaseInfo.IDMovieImdb // From TryUpload response
-	subContentMap["subcontent"] = params.CD1.SubContent           // Base64(Gzip(file_content))
+	// Assuming we only handle "cd1" for now, extract it
+	cd1, ok := params.CDs["cd1"]
+	if !ok {
+		return nil, fmt.Errorf("missing 'cd1' data in UploadSubtitles parameters")
+	}
 
-	// --- BEGIN DEBUG LOGGING ---
+	// --- BEGIN DEBUG LOGGING (Adjusted for new structure) ---
 	maskedToken := ""
 	if len(c.token) > 8 {
 		maskedToken = c.token[:4] + "..." + c.token[len(c.token)-4:]
-	} else {
-		maskedToken = c.token
 	}
-	base64Len := len(params.CD1.SubContent)
+
+	// Initialize variables used in logging
+	base64Len := len(cd1.SubContent)
 	base64Hash := ""
 	if base64Len > 0 {
-		base64Hash = fmt.Sprintf("%x", md5Sum([]byte(params.CD1.SubContent)))
+		base64Hash = fmt.Sprintf("%x", md5Sum([]byte(cd1.SubContent))) // Access content via cd1
 	}
-	log.Printf("[DEBUG] UploadSubtitles request: token=%s, idmovieimdb=%q, subhash=%q, subfilename=%q, base64len=%d, base64md5=%s, moviehash=%q, moviebytesize=%q, moviefilename=%q, moviefps=%q, movieframes=%q, movietimems=%q, hearingimpaired=%q, highdefinition=%q, automatictranslation=%q, foreignpartsonly=%q, subtranslator=%q, subauthorcomment=%q, moviereleasename=%q, movieaka=%q", maskedToken, params.BaseInfo.IDMovieImdb, params.CD1.SubHash, params.CD1.SubFilename, base64Len, base64Hash, params.CD1.MovieHash, params.CD1.MovieByteSize, params.CD1.MovieFilename, params.CD1.MovieFPS, params.CD1.MovieFrames, params.CD1.MovieTimeMS, params.BaseInfo.HearingImpaired, params.BaseInfo.HighDefinition, params.BaseInfo.AutomaticTranslation, params.BaseInfo.ForeignPartsOnly, params.BaseInfo.SubTranslator, params.BaseInfo.SubAuthorComment, params.BaseInfo.MovieReleaseName, params.BaseInfo.MovieAka)
+	log.Printf("[DEBUG] UploadSubtitles request: token=%s, baseinfo=%+v, cd1=%+v, base64len=%d, base64md5=%s",
+		maskedToken, params.BaseInfo, cd1, base64Len, base64Hash)
 	// --- END DEBUG LOGGING ---
+
+	// Construct the final nested structure for the XML-RPC call
+	callParams := map[string]interface{}{
+		"baseinfo": params.BaseInfo,
+	}
+	// Add cd1, cd2 etc. to the map directly
+	for key, cdData := range params.CDs {
+		callParams[key] = cdData
+	}
 
 	args := []interface{}{
 		c.token,
-		[]interface{}{ // Array of subtitle contents
-			subContentMap,
-		},
-		// No third 'baseinfo' argument for UploadSubtitles according to docs/common practice
+		callParams, // Pass the combined map
 	}
 
 	var rawResp interface{}
@@ -390,7 +410,7 @@ func (c *XmlRpcClient) UploadSubtitles(params XmlRpcUploadSubtitlesParams) (*Xml
 		return nil, fmt.Errorf("xmlrpc UploadSubtitles call failed: %w", err)
 	}
 
-	log.Printf("[DEBUG] Raw UploadSubtitles response: %+v (type: %T)", rawResp, rawResp)
+	// log.Printf("[DEBUG] Raw UploadSubtitles response: %+v (type: %T)", rawResp, rawResp) // Commented out verbose log
 
 	// Accept both map[string]interface{} and direct string (URL) as 'data'
 	switch v := rawResp.(type) {
@@ -410,18 +430,21 @@ func (c *XmlRpcClient) UploadSubtitles(params XmlRpcUploadSubtitlesParams) (*Xml
 				log.Printf("[DEBUG] UploadSubtitles: data is unexpected type: %T", dataTyped)
 			}
 		}
+		if subtitles, ok := v["subtitles"].(bool); ok {
+			result.Subtitles = subtitles
+		} else if subtitlesInt, ok := v["subtitles"].(int); ok {
+			result.Subtitles = (subtitlesInt != 0)
+		}
 		if seconds, ok := v["seconds"].(float64); ok {
 			result.Seconds = seconds
 		}
-		if alreadyInDB, ok := v["alreadyindb"].(int); ok {
-			// Not always present, but handle if so
-			_ = alreadyInDB // Not used yet
-		}
 		if result.Status != "200 OK" {
+			log.Printf("[ERROR] UploadSubtitles failed. Status: %s, Raw Response: %+v", result.Status, v)
 			return nil, fmt.Errorf("xmlrpc UploadSubtitles failed with status: %s", result.Status)
 		}
 		return &result, nil
 	default:
+		log.Printf("[ERROR] Unexpected UploadSubtitles response type: %T, Value: %+v", rawResp, rawResp)
 		return nil, fmt.Errorf("unexpected UploadSubtitles response type: %T (%v)", rawResp, rawResp)
 	}
 }
@@ -431,6 +454,35 @@ func md5Sum(data []byte) []byte {
 	h := md5.New()
 	h.Write(data)
 	return h.Sum(nil)
+}
+
+// GzipAndBase64Encode compresses data using gzip (no header) and then encodes it using base64.
+func GzipAndBase64Encode(data []byte) (string, error) {
+	var b bytes.Buffer
+	// We use NewWriterLevel with NoCompression just to get the RFC 1951 format without the gzip header/trailer.
+	// The actual compression level doesn't matter much here if we just want the format.
+	// Update: Per docs, it seems standard gzip IS expected, just maybe not the header? Let's try standard first.
+	// Reverting to standard gzip writer. The server might handle the header fine.
+	w := gzip.NewWriter(&b)
+	// zw, err := gzip.NewWriterLevel(&b, gzip.NoCompression)
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to create gzip writer: %w", err)
+	// }
+	// _, err := w.Write(data)
+	if err := w.Close(); err != nil {
+		return "", fmt.Errorf("failed to close gzip writer: %w", err)
+	}
+
+	encoded := base64.StdEncoding.EncodeToString(b.Bytes())
+	return encoded, nil
+}
+
+// Helper function to convert boolean to "1" or "0" string
+func boolToString(b bool) string {
+	if b {
+		return "1"
+	}
+	return "0"
 }
 
 // Close closes the underlying XML-RPC client connection.

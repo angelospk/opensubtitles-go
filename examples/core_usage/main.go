@@ -143,14 +143,9 @@ func main() {
 			log.Println("TryUpload response indicates duplicate or issue (Data=false). Skipping final upload.")
 		} else {
 			// --- UploadSubtitles ---
-			fmt.Println("Reading and encoding subtitle...")
-			base64Content, err := opensubtitles.ReadAndEncodeSubtitle(intent.SubtitleFilePath)
-			if err != nil {
-				log.Fatalf("Failed to read/encode subtitle: %v", err)
-			}
-
 			fmt.Println("Preparing UploadSubtitles parameters...")
-			uploadParams, err := opensubtitles.PrepareUploadSubtitlesParams(*tryParams, base64Content)
+			// Pass the original subtitle file path now
+			uploadParams, err := opensubtitles.PrepareUploadSubtitlesParams(*tryParams, intent.SubtitleFilePath)
 			if err != nil {
 				log.Fatalf("Error preparing UploadSubtitles params: %v", err)
 			}

@@ -1,8 +1,6 @@
 package opensubtitles
 
 import (
-	"bytes"
-	"compress/gzip"
 	"encoding/base64"
 	"fmt"
 	"os"
@@ -125,60 +123,105 @@ func PrepareTryUploadParams(intent UserUploadIntent) (*XmlRpcTryUploadParams, er
 }
 
 // readAndEncodeSubtitle reads the subtitle file, GZips it, and returns its Base64 encoded content.
+// UPDATE: Removing Gzip step based on server developer feedback - trying only Base64.
 func ReadAndEncodeSubtitle(subtitlePath string) (string, error) {
 	contentBytes, err := os.ReadFile(subtitlePath)
 	if err != nil {
 		return "", fmt.Errorf("failed to read subtitle file content '%s': %w", subtitlePath, err)
 	}
 
-	// GZip the content
-	var gzipBuffer bytes.Buffer
-	gzipWriter := gzip.NewWriter(&gzipBuffer)
-	_, err = gzipWriter.Write(contentBytes)
-	if err != nil {
-		return "", fmt.Errorf("failed to gzip subtitle content: %w", err)
-	}
-	err = gzipWriter.Close() // Close is important to finalize compression
-	if err != nil {
-		return "", fmt.Errorf("failed to close gzip writer: %w", err)
-	}
+	// GZip the content - REMOVED
+	// var gzipBuffer bytes.Buffer
+	// gzipWriter := gzip.NewWriter(&gzipBuffer)
+	// _, err = gzipWriter.Write(contentBytes)
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to gzip subtitle content: %w", err)
+	// }
+	// err = gzipWriter.Close() // Close is important to finalize compression
+	// if err != nil {
+	// 	return "", fmt.Errorf("failed to close gzip writer: %w", err)
+	// }
 
-	// Base64 encode the *gzipped* content
-	encodedContent := base64.StdEncoding.EncodeToString(gzipBuffer.Bytes())
+	// Base64 encode the *raw* content
+	encodedContent := base64.StdEncoding.EncodeToString(contentBytes)
 	return encodedContent, nil
 }
 
 // prepareUploadSubtitlesParams formats the data for the final UploadSubtitles call,
 // including the base64 encoded content.
-func PrepareUploadSubtitlesParams(tryParams XmlRpcTryUploadParams, base64Content string) (*XmlRpcUploadSubtitlesParams, error) {
+func PrepareUploadSubtitlesParams(tryParams XmlRpcTryUploadParams, subtitlePath string) (*XmlRpcUploadSubtitlesParams, error) {
+	base64Content, err := ReadAndEncodeSubtitle(subtitlePath)
+	if err != nil {
+		return nil, fmt.Errorf("failed to read and encode subtitle for upload: %w", err)
+	}
 	if base64Content == "" {
 		return nil, fmt.Errorf("base64 subtitle content cannot be empty")
 	}
 
+	// Parse string fields to their correct types (float64, int)
+	var movieByteSize float64
+	if tryParams.MovieByteSize != "" {
+		movieByteSize, err = strconv.ParseFloat(tryParams.MovieByteSize, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse MovieByteSize '%s': %w", tryParams.MovieByteSize, err)
+		}
+	}
+
+	var movieFPS float64
+	if tryParams.MovieFPS != "" {
+		movieFPS, err = strconv.ParseFloat(tryParams.MovieFPS, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse MovieFPS '%s': %w", tryParams.MovieFPS, err)
+		}
+	}
+
+	var movieFrames int
+	if tryParams.MovieFrames != "" {
+		movieFrames64, err := strconv.ParseInt(tryParams.MovieFrames, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse MovieFrames '%s': %w", tryParams.MovieFrames, err)
+		}
+		movieFrames = int(movieFrames64) // Convert to int
+	}
+
+	var movieTimeMS int
+	if tryParams.MovieTimeMS != "" {
+		movieTimeMS64, err := strconv.ParseInt(tryParams.MovieTimeMS, 10, 64)
+		if err != nil {
+			return nil, fmt.Errorf("failed to parse MovieTimeMS '%s': %w", tryParams.MovieTimeMS, err)
+		}
+		movieTimeMS = int(movieTimeMS64) // Convert to int
+	}
+
 	// Map fields from TryUploadParams to the nested structure UploadSubtitles expects
+	// Using the CDs map field now
 	params := XmlRpcUploadSubtitlesParams{
 		BaseInfo: XmlRpcUploadSubtitlesBaseInfo{
-			IDMovieImdb:          tryParams.IDMovieImdb,
-			MovieReleaseName:     tryParams.MovieReleaseName,
-			MovieAka:             tryParams.MovieAka,
-			SubLanguageID:        tryParams.SubLanguageID,
-			SubAuthorComment:     tryParams.SubAuthorComment,
-			HearingImpaired:      tryParams.HearingImpaired,
-			HighDefinition:       tryParams.HighDefinition,
-			AutomaticTranslation: tryParams.AutomaticTranslation,
-			SubTranslator:        tryParams.SubTranslator,
-			ForeignPartsOnly:     tryParams.ForeignPartsOnly,
+			IDMovieImdb:      tryParams.IDMovieImdb, // Keep relevant fields from baseinfo
+			MovieReleaseName: tryParams.MovieReleaseName,
+			MovieAka:         tryParams.MovieAka,
+			SubLanguageID:    tryParams.SubLanguageID,
+			SubAuthorComment: tryParams.SubAuthorComment,
+			// Remove boolean flags if not present in UploadSubtitles BaseInfo struct
+			// HearingImpaired:      tryParams.HearingImpaired,
+			// HighDefinition:       tryParams.HighDefinition,
+			// AutomaticTranslation: tryParams.AutomaticTranslation,
+			// SubTranslator:        tryParams.SubTranslator,
+			// ForeignPartsOnly:     tryParams.ForeignPartsOnly,
 		},
-		CD1: XmlRpcUploadSubtitlesCD{
-			SubHash:       tryParams.SubHash,
-			SubFilename:   tryParams.SubFilename,
-			SubContent:    base64Content,
-			MovieByteSize: tryParams.MovieByteSize,
-			MovieHash:     tryParams.MovieHash,
-			MovieFilename: tryParams.MovieFilename,
-			MovieFPS:      tryParams.MovieFPS,
-			MovieFrames:   tryParams.MovieFrames,
-			MovieTimeMS:   tryParams.MovieTimeMS,
+		CDs: map[string]XmlRpcUploadSubtitlesCD{
+			"cd1": {
+				SubHash:       tryParams.SubHash,
+				SubFilename:   tryParams.SubFilename,
+				MovieHash:     tryParams.MovieHash,
+				MovieByteSize: movieByteSize, // Use parsed float64
+				MovieTimeMS:   movieTimeMS,   // Use parsed int
+				MovieFrames:   movieFrames,   // Use parsed int
+				MovieFPS:      movieFPS,      // Use parsed float64
+				MovieFilename: tryParams.MovieFilename,
+				SubContent:    base64Content, // Use the provided encoded content
+			},
+			// Add cd2 etc. here if needed in the future
 		},
 	}
 
