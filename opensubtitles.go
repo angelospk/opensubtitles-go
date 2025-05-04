@@ -93,9 +93,9 @@ func (c *Client) SetAuthToken(token string, baseUrl string) error {
 			}
 		}
 		// Assuming httpclient expects the full base URL with potential /api/v1 path
-		// If the login response `base_url` is just `vip-api.opensubtitles.com`, adjust.
+		// If the login response `base_url` is just `vip-api.opensubtitles.com`, append path.
 		if parsedUrl.Host != "" && parsedUrl.Path == "" {
-			c.currentBaseUrl = baseUrl + "/api/v1" // Append standard path
+			c.currentBaseUrl = baseUrl + constants.ApiPath // Append standard path
 		} else {
 			c.currentBaseUrl = baseUrl // Assume full URL provided
 		}

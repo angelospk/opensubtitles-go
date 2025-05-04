@@ -1,6 +1,7 @@
 package opensubtitles
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -50,26 +51,23 @@ func TestGuessitSuccess(t *testing.T) {
 
 	_, client := setupTestServer(t, handler)
 	params := GuessitParams{Filename: expectedFilename}
-	// resp, err := client.Guessit(context.Background(), params)
+	guessResp, err := client.Guessit(context.Background(), params)
 
-	// require.NoError(t, err)
-	// require.NotNil(t, resp)
-	// require.NotNil(t, resp.Title)
-	// assert.Equal(t, expectedTitle, *resp.Title)
-	// require.NotNil(t, resp.Season)
-	// assert.Equal(t, expectedSeason, *resp.Season)
-	// require.NotNil(t, resp.Episode)
-	// assert.Equal(t, expectedEpisode, *resp.Episode)
-	// require.NotNil(t, resp.ScreenSize)
-	// assert.Equal(t, expectedScreenSize, *resp.ScreenSize)
-	// require.NotNil(t, resp.Source)
-	// assert.Equal(t, expectedSource, *resp.Source)
-	// require.NotNil(t, resp.Type)
-	// assert.Equal(t, expectedType, *resp.Type)
-	// assert.Nil(t, resp.Year) // Check that null fields are correctly nil
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs Guessit implementation")
+	// Assert Results
+	require.NoError(t, err)
+	require.NotNil(t, guessResp)
+	assert.Equal(t, expectedTitle, *guessResp.Title)
+	assert.Equal(t, expectedSeason, *guessResp.Season)
+	assert.Equal(t, expectedEpisode, *guessResp.Episode)
+	assert.Equal(t, "Chapter One The Hellfire Club", *guessResp.EpisodeTitle)
+	assert.Equal(t, expectedScreenSize, *guessResp.ScreenSize)
+	assert.Equal(t, expectedSource, *guessResp.Source)
+	assert.Equal(t, "Dolby Digital Plus", *guessResp.AudioCodec)
+	assert.Equal(t, "H.264", *guessResp.VideoCodec)
+	assert.Equal(t, "GalaxyTV", *guessResp.ReleaseGroup)
+	assert.Equal(t, expectedType, *guessResp.Type)
+	assert.Nil(t, guessResp.Year)
+	assert.Nil(t, guessResp.Language)
 }
 
 func TestGuessitMissingFilename(t *testing.T) {
@@ -90,14 +88,12 @@ func TestGuessitMissingFilename(t *testing.T) {
 	// Intentionally create params without filename to test API response
 	// Note: go-querystring might omit if empty string. Let's assume API checks.
 	params := GuessitParams{Filename: ""} // Or omit the field if using pointers
-	// resp, err := client.Guessit(context.Background(), params)
+	guessResp, err := client.Guessit(context.Background(), params)
 
-	// require.Error(t, err)
-	// assert.Nil(t, resp)
-	// assert.Contains(t, err.Error(), "status 400")
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs Guessit implementation")
+	// Assert Results
+	require.Error(t, err)
+	assert.Nil(t, guessResp)
+	assert.Contains(t, err.Error(), "status 400")
 }
 
 func TestGuessitError(t *testing.T) {
@@ -106,13 +102,12 @@ func TestGuessitError(t *testing.T) {
 	}
 	_, client := setupTestServer(t, handler)
 	params := GuessitParams{Filename: "some.file.mkv"}
-	// resp, err := client.Guessit(context.Background(), params)
-	// require.Error(t, err)
-	// assert.Nil(t, resp)
-	// assert.Contains(t, err.Error(), "status 500")
+	guessResp, err := client.Guessit(context.Background(), params)
 
-	// Dummy assertion
-	assert.True(t, true, "Test needs Guessit implementation")
+	// Assert Results
+	require.Error(t, err)
+	assert.Nil(t, guessResp)
+	assert.Contains(t, err.Error(), "status 500")
 }
 
 // Helpers defined in features_test.go or common test file

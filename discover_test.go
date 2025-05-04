@@ -1,6 +1,7 @@
 package opensubtitles
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
 
@@ -44,32 +45,31 @@ func TestDiscoverPopularSuccess(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverPopular(context.Background(), nil) // No params
+	_, client := setupTestServer(t, handler) // Call setup, ignore client for now
 
-	// require.NoError(t, err)
-	// require.NotNil(t, resp)
-	// require.Len(t, resp.Data, 2)
+	// Call DiscoverPopular (Needs implementation)
+	resp, err := client.DiscoverPopular(context.Background(), DiscoverParams{}) // Pass empty params
 
-	// // Check first feature (Movie)
-	// rawMovie, _ := json.Marshal(resp.Data[0].Attributes)
-	// var movieAttrs FeatureMovieAttributes
-	// err = json.Unmarshal(rawMovie, &movieAttrs)
-	// require.NoError(t, err)
-	// assert.Equal(t, "Movie", movieAttrs.FeatureType)
-	// assert.Equal(t, "514811", movieAttrs.FeatureID)
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	require.Len(t, resp.Data, 2)
 
-	// // Check second feature (TVShow)
-	// rawTV, _ := json.Marshal(resp.Data[1].Attributes)
-	// var tvAttrs FeatureTvshowAttributes
-	// err = json.Unmarshal(rawTV, &tvAttrs)
-	// require.NoError(t, err)
-	// assert.Equal(t, "Tvshow", tvAttrs.FeatureType)
-	// assert.Equal(t, "644054", tvAttrs.FeatureID)
-	// assert.Equal(t, 11, tvAttrs.SeasonsCount)
+	// Check first feature (Movie)
+	rawMovie, _ := json.Marshal(resp.Data[0].Attributes)
+	var movieAttrs FeatureMovieAttributes
+	err = json.Unmarshal(rawMovie, &movieAttrs)
+	require.NoError(t, err)
+	assert.Equal(t, "Movie", movieAttrs.FeatureType)
+	assert.Equal(t, "514811", movieAttrs.FeatureID)
 
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverPopular implementation")
+	// Check second feature (TVShow)
+	rawTV, _ := json.Marshal(resp.Data[1].Attributes)
+	var tvAttrs FeatureTvshowAttributes
+	err = json.Unmarshal(rawTV, &tvAttrs)
+	require.NoError(t, err)
+	assert.Equal(t, "Tvshow", tvAttrs.FeatureType)
+	assert.Equal(t, "644054", tvAttrs.FeatureID)
+	assert.Equal(t, 11, tvAttrs.SeasonsCount)
 }
 
 func TestDiscoverPopularWithType(t *testing.T) {
@@ -83,13 +83,11 @@ func TestDiscoverPopularWithType(t *testing.T) {
 		_, _ = w.Write([]byte(`{"data": []}`))
 	}
 
-	_, client := setupTestServer(t, handler)
+	_, client := setupTestServer(t, handler) // Call setup, ignore client for now
 	params := DiscoverParams{Type: &expectedType}
-	// _, err := client.DiscoverPopular(context.Background(), &params)
-	// require.NoError(t, err)
 
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverPopular implementation")
+	_, err := client.DiscoverPopular(context.Background(), params)
+	require.NoError(t, err)
 }
 
 func TestDiscoverPopularError(t *testing.T) {
@@ -97,13 +95,10 @@ func TestDiscoverPopularError(t *testing.T) {
 		w.WriteHeader(http.StatusTooManyRequests) // Simulate rate limit
 	}
 	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverPopular(context.Background(), nil)
-	// require.Error(t, err)
-	// assert.Nil(t, resp)
-	// assert.Contains(t, err.Error(), "status 429")
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverPopular implementation")
+	resp, err := client.DiscoverPopular(context.Background(), DiscoverParams{})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "status 429")
 }
 
 // --- Latest ---
@@ -130,18 +125,15 @@ func TestDiscoverLatestSuccess(t *testing.T) {
 		require.NoError(t, err)
 	}
 
-	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverLatest(context.Background(), nil)
+	_, client := setupTestServer(t, handler) // Call setup, ignore client for now
+	resp, err := client.DiscoverLatest(context.Background(), DiscoverParams{})
 
-	// require.NoError(t, err)
-	// require.NotNil(t, resp)
-	// assert.Equal(t, 1, resp.TotalPages)
-	// assert.Equal(t, 60, resp.TotalCount) // Verify fixed count assumption
-	// require.NotEmpty(t, resp.Data)
-	// assert.Equal(t, expectedSubtitleID, resp.Data[0].ID)
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverLatest implementation")
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 1, resp.TotalPages)
+	assert.Equal(t, 60, resp.TotalCount) // Verify fixed count assumption
+	require.NotEmpty(t, resp.Data)
+	assert.Equal(t, expectedSubtitleID, resp.Data[0].ID)
 }
 
 func TestDiscoverLatestWithLang(t *testing.T) {
@@ -156,11 +148,8 @@ func TestDiscoverLatestWithLang(t *testing.T) {
 	}
 	_, client := setupTestServer(t, handler)
 	params := DiscoverParams{Language: &expectedLang}
-	// _, err := client.DiscoverLatest(context.Background(), &params)
-	// require.NoError(t, err)
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverLatest implementation")
+	_, err := client.DiscoverLatest(context.Background(), params)
+	require.NoError(t, err)
 }
 
 func TestDiscoverLatestError(t *testing.T) {
@@ -168,13 +157,10 @@ func TestDiscoverLatestError(t *testing.T) {
 		w.WriteHeader(http.StatusInternalServerError)
 	}
 	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverLatest(context.Background(), nil)
-	// require.Error(t, err)
-	// assert.Nil(t, resp)
-	// assert.Contains(t, err.Error(), "status 500")
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverLatest implementation")
+	resp, err := client.DiscoverLatest(context.Background(), DiscoverParams{})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "status 500")
 }
 
 // --- Most Downloaded ---
@@ -200,16 +186,13 @@ func TestDiscoverMostDownloadedSuccess(t *testing.T) {
 		require.NoError(t, err)
 	}
 	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverMostDownloaded(context.Background(), nil)
-	// require.NoError(t, err)
-	// require.NotNil(t, resp)
-	// assert.Equal(t, 1, resp.TotalCount)
-	// require.Len(t, resp.Data, 1)
-	// assert.Equal(t, expectedSubtitleID, resp.Data[0].ID)
-	// assert.Equal(t, 15649, resp.Data[0].Attributes.NewDownloadCount)
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverMostDownloaded implementation")
+	resp, err := client.DiscoverMostDownloaded(context.Background(), DiscoverParams{})
+	require.NoError(t, err)
+	require.NotNil(t, resp)
+	assert.Equal(t, 1, resp.TotalCount)
+	require.Len(t, resp.Data, 1)
+	assert.Equal(t, expectedSubtitleID, resp.Data[0].ID)
+	assert.Equal(t, 15649, resp.Data[0].Attributes.NewDownloadCount)
 }
 
 func TestDiscoverMostDownloadedWithParams(t *testing.T) {
@@ -226,11 +209,8 @@ func TestDiscoverMostDownloadedWithParams(t *testing.T) {
 	}
 	_, client := setupTestServer(t, handler)
 	params := DiscoverParams{Language: &expectedLang, Type: &expectedType}
-	// _, err := client.DiscoverMostDownloaded(context.Background(), &params)
-	// require.NoError(t, err)
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverMostDownloaded implementation")
+	_, err := client.DiscoverMostDownloaded(context.Background(), params)
+	require.NoError(t, err)
 }
 
 func TestDiscoverMostDownloadedError(t *testing.T) {
@@ -238,11 +218,8 @@ func TestDiscoverMostDownloadedError(t *testing.T) {
 		w.WriteHeader(http.StatusServiceUnavailable)
 	}
 	_, client := setupTestServer(t, handler)
-	// resp, err := client.DiscoverMostDownloaded(context.Background(), nil)
-	// require.Error(t, err)
-	// assert.Nil(t, resp)
-	// assert.Contains(t, err.Error(), "status 503")
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs DiscoverMostDownloaded implementation")
+	resp, err := client.DiscoverMostDownloaded(context.Background(), DiscoverParams{})
+	require.Error(t, err)
+	assert.Nil(t, resp)
+	assert.Contains(t, err.Error(), "status 503")
 }

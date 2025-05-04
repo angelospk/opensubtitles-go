@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+
 	// "net/url"
 	"testing"
 
@@ -91,43 +92,40 @@ func TestSearchFeaturesSuccessByID(t *testing.T) {
 	params := SearchFeaturesParams{
 		IMDbID: String(expectedIMDbID), // Use helper
 	}
-	// searchResp, err := client.SearchFeatures(context.Background(), params)
+	searchResp, err := client.SearchFeatures(context.Background(), params)
 
 	// Assert Results - Placeholder
-	// require.NoError(t, err)
-	// require.NotNil(t, searchResp)
-	// require.Len(t, searchResp.Data, 1)
-	// assert.Equal(t, expectedFeatureID, searchResp.Data[0].ID)
-	// assert.Equal(t, "feature", searchResp.Data[0].Type) // Outer type
+	require.NoError(t, err)
+	require.NotNil(t, searchResp)
+	require.Len(t, searchResp.Data, 1)
+	assert.Equal(t, expectedFeatureID, searchResp.Data[0].ID)
+	assert.Equal(t, "feature", searchResp.Data[0].Type) // Outer type
 
 	// Now, check the dynamic attributes field
 	// // 1. Marshal the interface{} back to RawMessage
-	// rawAttrs, err := json.Marshal(searchResp.Data[0].Attributes)
-	// require.NoError(t, err)
+	rawAttrs, err := json.Marshal(searchResp.Data[0].Attributes)
+	require.NoError(t, err)
 
 	// // 2. Unmarshal RawMessage into a map to check feature_type
-	// var attrMap map[string]interface{}
-	// err = json.Unmarshal(rawAttrs, &attrMap)
-	// require.NoError(t, err)
-	// actualFeatureType, ok := attrMap["feature_type"].(string)
-	// require.True(t, ok, "feature_type should be a string")
-	// assert.Equal(t, expectedFeatureType, actualFeatureType)
+	var attrMap map[string]interface{}
+	err = json.Unmarshal(rawAttrs, &attrMap)
+	require.NoError(t, err)
+	actualFeatureType, ok := attrMap["feature_type"].(string)
+	require.True(t, ok, "feature_type should be a string")
+	assert.Equal(t, expectedFeatureType, actualFeatureType)
 
 	// // 3. Unmarshal into the specific type based on feature_type
-	// if actualFeatureType == expectedFeatureType {
-	//     var episodeAttrs FeatureEpisodeAttributes
-	//     err = json.Unmarshal(rawAttrs, &episodeAttrs)
-	//     require.NoError(t, err)
-	//     assert.Equal(t, expectedFeatureID, episodeAttrs.FeatureID)
-	//     assert.Equal(t, "the tortelli tort", episodeAttrs.Title)
-	// 	   require.NotNil(t, episodeAttrs.ParentTitle)
-	//     assert.Equal(t, "Cheers", *episodeAttrs.ParentTitle)
-	// } else {
-	//     t.Fatalf("Expected feature type %s but got %s", expectedFeatureType, actualFeatureType)
-	// }
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs SearchFeatures implementation")
+	if actualFeatureType == expectedFeatureType {
+		var episodeAttrs FeatureEpisodeAttributes
+		err = json.Unmarshal(rawAttrs, &episodeAttrs)
+		require.NoError(t, err)
+		assert.Equal(t, expectedFeatureID, episodeAttrs.FeatureID)
+		assert.Equal(t, "the tortelli tort", episodeAttrs.Title)
+		require.NotNil(t, episodeAttrs.ParentTitle)
+		assert.Equal(t, "Cheers", *episodeAttrs.ParentTitle)
+	} else {
+		t.Fatalf("Expected feature type %s but got %s", expectedFeatureType, actualFeatureType)
+	}
 }
 
 func TestSearchFeaturesSuccessByQuery(t *testing.T) {
@@ -140,7 +138,7 @@ func TestSearchFeaturesSuccessByQuery(t *testing.T) {
 		query := r.URL.Query()
 		assert.Equal(t, expectedQuery, query.Get("query"))
 		assert.Equal(t, expectedType, query.Get("type"))
-		assert.Equal(t, "start", query.Get("query_match")) // Default - Assuming default, though API doc says exact
+		assert.Equal(t, "", query.Get("query_match")) // Expect empty string due to omitempty
 
 		w.WriteHeader(http.StatusOK)
 		// Return a Movie type feature
@@ -169,22 +167,19 @@ func TestSearchFeaturesSuccessByQuery(t *testing.T) {
 		Query: String(expectedQuery),
 		Type:  String(expectedType),
 	}
-	// searchResp, err := client.SearchFeatures(context.Background(), params)
+	searchResp, err := client.SearchFeatures(context.Background(), params)
 
-	// require.NoError(t, err)
-	// require.NotNil(t, searchResp)
-	// require.Len(t, searchResp.Data, 1)
+	require.NoError(t, err)
+	require.NotNil(t, searchResp)
+	require.Len(t, searchResp.Data, 1)
 
-	// // Check attributes type dynamically
-	// rawAttrs, _ := json.Marshal(searchResp.Data[0].Attributes)
-	// var movieAttrs FeatureMovieAttributes
-	// err = json.Unmarshal(rawAttrs, &movieAttrs)
-	// require.NoError(t, err)
-	// assert.Equal(t, "Movie", movieAttrs.FeatureType)
-	// assert.Equal(t, "514811", movieAttrs.FeatureID)
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs SearchFeatures implementation")
+	// Check attributes type dynamically
+	rawAttrs, _ := json.Marshal(searchResp.Data[0].Attributes)
+	var movieAttrs FeatureMovieAttributes
+	err = json.Unmarshal(rawAttrs, &movieAttrs)
+	require.NoError(t, err)
+	assert.Equal(t, "Movie", movieAttrs.FeatureType)
+	assert.Equal(t, "514811", movieAttrs.FeatureID)
 }
 
 func TestSearchFeaturesError(t *testing.T) {
@@ -196,14 +191,11 @@ func TestSearchFeaturesError(t *testing.T) {
 	_, client := setupTestServer(t, handler)
 	imdbID := "invalid-id" // Example invalid param
 	params := SearchFeaturesParams{IMDbID: String(imdbID)}
-	// searchResp, err := client.SearchFeatures(context.Background(), params)
+	searchResp, err := client.SearchFeatures(context.Background(), params)
 
-	// require.Error(t, err)
-	// assert.Nil(t, searchResp)
-	// assert.Contains(t, err.Error(), "status 400")
-
-	// Dummy assertion
-	assert.True(t, true, "Test needs SearchFeatures implementation")
+	require.Error(t, err)
+	assert.Nil(t, searchResp)
+	assert.Contains(t, err.Error(), "status 400")
 }
 
 // Helper functions to create pointers easily in tests
@@ -214,4 +206,4 @@ func pstr(s string) *string { return &s }
 // func pbool(b bool) *bool { return &b }
 
 // Helper needed for tests in this file
-func String(s string) *string { return &s }
+// func String(s string) *string { return &s }

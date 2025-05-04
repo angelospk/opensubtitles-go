@@ -28,6 +28,12 @@ func setupTestServer(t *testing.T, handler http.HandlerFunc) (*httptest.Server, 
 	return server, client
 }
 
+// String is a helper function to return a pointer to a string.
+// Useful for optional string parameters in API request structs.
+func String(s string) *string {
+	return &s
+}
+
 func TestLogin(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		expectedToken := "mock-jwt-token"
@@ -112,7 +118,6 @@ func TestLogin(t *testing.T) {
 func TestLogout(t *testing.T) {
 	t.Run("Success", func(t *testing.T) {
 		initialToken := "valid-token-to-invalidate"
-		initialBaseURL := "https://api.opensubtitles.com/api/v1" // Assume standard URL
 
 		handler := func(w http.ResponseWriter, r *http.Request) {
 			// Assert Request
@@ -133,9 +138,10 @@ func TestLogout(t *testing.T) {
 		}
 
 		_, client := setupTestServer(t, handler)
+		serverURL := client.GetCurrentBaseURL() // Get the actual mock server URL
 
-		// Pre-authenticate client for test
-		err := client.SetAuthToken(initialToken, initialBaseURL)
+		// Pre-authenticate client for test using the mock server's URL
+		err := client.SetAuthToken(initialToken, serverURL) // Use mock server URL
 		require.NoError(t, err)
 		require.True(t, client.isAuthenticated(), "Client should be authenticated before logout")
 
