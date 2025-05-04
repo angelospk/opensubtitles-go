@@ -1,3 +1,4 @@
+```go
 package main
 
 import (
@@ -173,3 +174,4 @@ func main() {
 
 	log.Println("\n--- Example Finished ---")
 }
+```

@@ -1,9 +1,11 @@
-module github.com/angelospk/osuploadergui
+module github.com/angelospk/opensubtitles-go
 
-go 1.24.0
+go 1.22
 
-require github.com/joho/godotenv v1.5.1
+toolchain go1.22.1
 
-require alexejk.io/go-xmlrpc v0.5.3
-
-require github.com/kolo/xmlrpc v0.0.0-20220921171641-a4b6fa1dd06b // indirect
+require (
+	github.com/google/go-querystring v1.1.0
+	github.com/kolo/xmlrpc v0.0.0-20220921171641-a4b6fa1dd06b
+	github.com/stretchr/testify v1.9.0
+)

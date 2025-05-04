@@ -1,4 +1,4 @@
-package opensubtitles
+package upload
 
 import (
 	"bytes"
