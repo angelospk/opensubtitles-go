@@ -40,8 +40,8 @@ func boolToXmlRpc(b bool) string {
 
 // PrepareTryUploadParams creates the parameters needed for the TryUploadSubtitles XML-RPC call
 // based on user intent.
-func PrepareTryUploadParams(intent UserUploadIntent) (xmlRpcTryUploadParams, error) {
-	params := xmlRpcTryUploadParams{}
+func PrepareTryUploadParams(intent UserUploadIntent) (XmlRpcTryUploadParams, error) {
+	params := XmlRpcTryUploadParams{}
 
 	// Subtitle Hash & Filename (Mandatory for TryUpload)
 	if intent.SubtitleFilePath == "" {
@@ -119,10 +119,10 @@ func PrepareTryUploadParams(intent UserUploadIntent) (xmlRpcTryUploadParams, err
 
 // readAndEncodeSubtitle reads the subtitle file, GZips it, and returns its Base64 encoded content.
 // UPDATE: Removing Gzip step based on server developer feedback - trying only Base64.
-func ReadAndEncodeSubtitle(subtitlePath string) (string, error) {
-	contentBytes, err := os.ReadFile(subtitlePath)
+func ReadAndEncodeSubtitle(filePath string) (encodedContent string, subHash string, err error) {
+	contentBytes, err := os.ReadFile(filePath)
 	if err != nil {
-		return "", fmt.Errorf("failed to read subtitle file content '%s': %w", subtitlePath, err)
+		return "", "", fmt.Errorf("failed to read subtitle file content '%s': %w", filePath, err)
 	}
 
 	// GZip the content - REMOVED
@@ -138,8 +138,15 @@ func ReadAndEncodeSubtitle(subtitlePath string) (string, error) {
 	// }
 
 	// Base64 encode the *raw* content
-	encodedContent := base64.StdEncoding.EncodeToString(contentBytes)
-	return encodedContent, nil
+	encodedContent = base64.StdEncoding.EncodeToString(contentBytes)
+
+	// Calculate the MD5 hash of the content
+	subHash, err = CalculateMD5Hash(filePath)
+	if err != nil {
+		return "", "", fmt.Errorf("failed to calculate MD5 hash for subtitle: %w", err)
+	}
+
+	return encodedContent, subHash, nil
 }
 
 // CalculateSubHash calculates the MD5 hash of a file, returning the hex string.
@@ -149,19 +156,19 @@ func CalculateSubHash(filePath string) (string, error) {
 }
 
 // PrepareUploadSubtitlesParams prepares the parameters for the final UploadSubtitles XML-RPC call.
-func PrepareUploadSubtitlesParams(tryParams xmlRpcTryUploadParams, subtitlePath string) (xmlRpcUploadSubtitlesParams, error) {
+func PrepareUploadSubtitlesParams(tryParams XmlRpcTryUploadParams, subtitlePath string) (XmlRpcUploadSubtitlesParams, error) {
 	// Calculate subtitle hash (reuse from tryParams if possible? No, needs fresh calc)
 	subHash, err := CalculateSubHash(subtitlePath)
 	if err != nil {
-		return xmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to calculate subhash: %w", err)
+		return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to calculate subhash: %w", err)
 	}
 
-	base64Content, err := ReadAndEncodeSubtitle(subtitlePath)
+	base64Content, subHash, err := ReadAndEncodeSubtitle(subtitlePath)
 	if err != nil {
-		return xmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to read and encode subtitle for upload: %w", err)
+		return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to read and encode subtitle for upload: %w", err)
 	}
 	if base64Content == "" {
-		return xmlRpcUploadSubtitlesParams{}, fmt.Errorf("base64 subtitle content cannot be empty")
+		return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("base64 subtitle content cannot be empty")
 	}
 
 	// Parse string fields to their correct types (float64, int)
@@ -169,7 +176,7 @@ func PrepareUploadSubtitlesParams(tryParams xmlRpcTryUploadParams, subtitlePath 
 	if tryParams.MovieByteSize != "" {
 		movieByteSize, err = strconv.ParseFloat(tryParams.MovieByteSize, 64)
 		if err != nil {
-			return xmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to parse MovieByteSize '%s': %w", tryParams.MovieByteSize, err)
+			return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to parse MovieByteSize '%s': %w", tryParams.MovieByteSize, err)
 		}
 	}
 
@@ -177,7 +184,7 @@ func PrepareUploadSubtitlesParams(tryParams xmlRpcTryUploadParams, subtitlePath 
 	if tryParams.MovieFPS != "" {
 		movieFPS, err = strconv.ParseFloat(tryParams.MovieFPS, 64)
 		if err != nil {
-			return xmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to parse MovieFPS '%s': %w", tryParams.MovieFPS, err)
+			return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to parse MovieFPS '%s': %w", tryParams.MovieFPS, err)
 		}
 	}
 
@@ -193,15 +200,15 @@ func PrepareUploadSubtitlesParams(tryParams xmlRpcTryUploadParams, subtitlePath 
 	}
 
 	// Build the final structure
-	params := xmlRpcUploadSubtitlesParams{
-		BaseInfo: xmlRpcUploadSubtitlesBaseInfo{
+	params := XmlRpcUploadSubtitlesParams{
+		BaseInfo: XmlRpcUploadSubtitlesBaseInfo{
 			IDMovieImdb:      tryParams.IDMovieImdb, // Reuse relevant info from tryParams
 			SubLanguageID:    tryParams.SubLanguageID,
 			MovieReleaseName: tryParams.MovieReleaseName,
 			MovieAka:         tryParams.MovieAka,
 			SubAuthorComment: tryParams.SubAuthorComment,
 		},
-		CDs: map[string]xmlRpcUploadSubtitlesCD{
+		CDs: map[string]XmlRpcUploadSubtitlesCD{
 			"cd1": {
 				SubHash:       subHash,               // Calculated hash
 				SubFilename:   tryParams.SubFilename, // Reuse filename
@@ -219,9 +226,9 @@ func PrepareUploadSubtitlesParams(tryParams xmlRpcTryUploadParams, subtitlePath 
 
 // --- Struct Definitions (Internal to upload package) ---
 
-// xmlRpcTryUploadParams holds parameters for the TryUploadSubtitles call.
+// XmlRpcTryUploadParams holds parameters for the TryUploadSubtitles call.
 // Based on usage in tryUploadSubtitles and PrepareTryUploadParams.
-type xmlRpcTryUploadParams struct {
+type XmlRpcTryUploadParams struct {
 	SubHash              string `xmlrpc:"subhash"`
 	SubFilename          string `xmlrpc:"subfilename"`
 	MovieHash            string `xmlrpc:"moviehash"`
@@ -241,9 +248,9 @@ type xmlRpcTryUploadParams struct {
 	ForeignPartsOnly     string `xmlrpc:"foreignpartsonly,omitempty"`     // "0" or "1"
 }
 
-// xmlRpcUploadSubtitlesBaseInfo holds the 'baseinfo' part for UploadSubtitles.
+// XmlRpcUploadSubtitlesBaseInfo holds the 'baseinfo' part for UploadSubtitles.
 // Based on PrepareUploadSubtitlesParams.
-type xmlRpcUploadSubtitlesBaseInfo struct {
+type XmlRpcUploadSubtitlesBaseInfo struct {
 	IDMovieImdb      string `xmlrpc:"idmovieimdb,omitempty"`
 	SubLanguageID    string `xmlrpc:"sublanguageid,omitempty"`
 	MovieReleaseName string `xmlrpc:"moviereleasename,omitempty"`
@@ -256,9 +263,9 @@ type xmlRpcUploadSubtitlesBaseInfo struct {
 	ForeignPartsOnly string `xmlrpc:"foreignpartsonly,omitempty"`
 }
 
-// xmlRpcUploadSubtitlesCD holds the 'cdX' data for UploadSubtitles.
+// XmlRpcUploadSubtitlesCD holds the 'cdX' data for UploadSubtitles.
 // Based on PrepareUploadSubtitlesParams.
-type xmlRpcUploadSubtitlesCD struct {
+type XmlRpcUploadSubtitlesCD struct {
 	SubHash       string `xmlrpc:"subhash"`
 	SubFilename   string `xmlrpc:"subfilename"`
 	MovieHash     string `xmlrpc:"moviehash,omitempty"`     // Optional here? API implies it's needed if no imdbid
@@ -268,10 +275,10 @@ type xmlRpcUploadSubtitlesCD struct {
 	MovieTimeMS   string `xmlrpc:"movietimems,omitempty"`
 }
 
-// xmlRpcUploadSubtitlesParams is the top-level structure for the UploadSubtitles call.
-type xmlRpcUploadSubtitlesParams struct {
-	BaseInfo xmlRpcUploadSubtitlesBaseInfo      `xmlrpc:"baseinfo"`
-	CDs      map[string]xmlRpcUploadSubtitlesCD `xmlrpc:",inline"` // Map "cd1", "cd2" etc. to CD data
+// XmlRpcUploadSubtitlesParams is the top-level structure for the UploadSubtitles call.
+type XmlRpcUploadSubtitlesParams struct {
+	BaseInfo XmlRpcUploadSubtitlesBaseInfo      `xmlrpc:"baseinfo"`
+	CDs      map[string]XmlRpcUploadSubtitlesCD `xmlrpc:",inline"` // Map "cd1", "cd2" etc. to CD data
 }
 
 // --- Helper Functions ---

@@ -13,7 +13,7 @@ package upload
 // }
 
 // type xmlRpcUploader struct {
-// 	 // ... xmlrpc client instance, token, etc.
+//  // ... xmlrpc client instance, token, etc.
 // }
 
 // func NewXmlRpcUploader() (Uploader, error) { ... }
@@ -245,7 +245,7 @@ type xmlRpcUploadSubtitlesResponse struct {
 
 // --- Internal Method Implementations ---
 // Renamed TryUploadSubtitles to unexported
-func (c *xmlRpcClient) tryUploadSubtitles(params xmlRpcTryUploadParams) (*xmlRpcTryUploadResponse, error) {
+func (c *xmlRpcClient) tryUploadSubtitles(params XmlRpcTryUploadParams) (*xmlRpcTryUploadResponse, error) {
 
 	// Prepare the complex structure expected by the API
 	cdMap := make(map[string]interface{})
@@ -362,7 +362,7 @@ func (c *xmlRpcClient) tryUploadSubtitles(params xmlRpcTryUploadParams) (*xmlRpc
 }
 
 // Renamed UploadSubtitles to unexported
-func (c *xmlRpcClient) uploadSubtitles(params xmlRpcUploadSubtitlesParams) (*xmlRpcUploadSubtitlesResponse, error) {
+func (c *xmlRpcClient) uploadSubtitles(params XmlRpcUploadSubtitlesParams) (*xmlRpcUploadSubtitlesResponse, error) {
 
 	// Assuming we only handle "cd1" for now, extract it - Removed unused var check
 	// cd1, ok := params.CDs["cd1"]

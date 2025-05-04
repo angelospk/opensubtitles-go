@@ -5,12 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"net/url"
+	"strings"
 	"sync" // For thread-safe access to token/baseUrl
 
 	"github.com/angelospk/opensubtitles-go/internal/constants"
 	"github.com/angelospk/opensubtitles-go/internal/httpclient"
-	// Placeholder import for upload package
-	// "github.com/angelospk/opensubtitles-go/upload"
+
+	// Import the upload package
+	"github.com/angelospk/opensubtitles-go/upload"
 )
 
 // Config holds the configuration for the OpenSubtitles client.
@@ -27,8 +29,8 @@ type Client struct {
 	mu             sync.RWMutex       // Protects access to token and currentBaseUrl
 	authToken      *string
 	currentBaseUrl string
-	// Add UploadClient interface here if needed later
-	// uploader   upload.Uploader // Example
+	// Add UploadClient
+	uploader upload.Uploader
 }
 
 // NewClient creates a new OpenSubtitles API client.
@@ -37,7 +39,8 @@ func NewClient(config Config) (*Client, error) {
 		return nil, errors.New("API key is required")
 	}
 	if config.UserAgent == "" {
-		return nil, errors.New("User-Agent is required")
+		// Use the default user agent if none is provided
+		config.UserAgent = constants.DefaultUserAgent
 	}
 
 	baseUrl := constants.DefaultBaseURL
@@ -55,12 +58,12 @@ func NewClient(config Config) (*Client, error) {
 		currentBaseUrl: baseUrl,
 	}
 
-	// Initialize the uploader (if needed)
-	// var err error
-	// c.uploader, err = upload.NewXmlRpcUploader() // Example initialization
-	// if err != nil {
-	// 	 return nil, fmt.Errorf("failed to initialize uploader: %w", err)
-	// }
+	// Initialize the uploader
+	var err error
+	c.uploader, err = upload.NewXmlRpcUploader() // Initialize the XML-RPC uploader
+	if err != nil {
+		return nil, fmt.Errorf("failed to initialize uploader: %w", err)
+	}
 
 	return c, nil
 }
@@ -79,19 +82,20 @@ func (c *Client) SetAuthToken(token string, baseUrl string) error {
 
 	// Validate and update base URL if provided
 	if baseUrl != "" {
+		// Ensure scheme *before* parsing, as ParseRequestURI requires it.
+		if !strings.HasPrefix(baseUrl, "http://") && !strings.HasPrefix(baseUrl, "https://") {
+			baseUrl = "https://" + baseUrl // Assume https
+		}
+
 		parsedUrl, err := url.ParseRequestURI(baseUrl)
 		if err != nil {
-			return fmt.Errorf("invalid base URL provided: %w", err)
+			// This error should be less likely now, but keep the check
+			return fmt.Errorf("invalid base URL provided ('%s'): %w", baseUrl, err)
 		}
-		// Ensure scheme if just hostname was given (like in login response)
-		if parsedUrl.Scheme == "" {
-			baseUrl = "https://" + baseUrl
-			// Re-parse to get full URL structure if needed by httpclient
-			parsedUrl, err = url.ParseRequestURI(baseUrl)
-			if err != nil {
-				return fmt.Errorf("failed to construct full base URL: %w", err)
-			}
-		}
+
+		// Scheme check is now redundant here, but harmless.
+		// if parsedUrl.Scheme == "" { ... }
+
 		// Assuming httpclient expects the full base URL with potential /api/v1 path
 		// If the login response `base_url` is just `vip-api.opensubtitles.com`, append path.
 		if parsedUrl.Host != "" && parsedUrl.Path == "" {
@@ -122,6 +126,11 @@ func (c *Client) GetCurrentBaseURL() string {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 	return c.currentBaseUrl
+}
+
+// Uploader returns the configured uploader instance for XML-RPC operations.
+func (c *Client) Uploader() upload.Uploader {
+	return c.uploader
 }
 
 // Helper to check if authenticated
