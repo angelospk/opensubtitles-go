@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"strings"
 
-	opensubtitles "github.com/angelospk/opensubtitles-go"
 	"github.com/angelospk/opensubtitles-go/upload"
 )
 
@@ -19,14 +18,8 @@ func main() {
 	reader := bufio.NewReader(os.Stdin)
 
 	// --- Credentials ---
-	fmt.Println("--- OpenSubtitles Credentials ---")
-	fmt.Println("Enter your OpenSubtitles API Key:")
-	apiKey, _ := reader.ReadString('\n')
-	apiKey = strings.TrimSpace(apiKey)
 
-	fmt.Println("Enter your User Agent (e.g., MyApp v1.0):")
-	userAgent, _ := reader.ReadString('\n')
-	userAgent = strings.TrimSpace(userAgent)
+	userAgent := "opensubtitles-api v5.1.2"
 
 	fmt.Println("Enter your OpenSubtitles Username:")
 	username, _ := reader.ReadString('\n')
@@ -40,20 +33,6 @@ func main() {
 	hasher := md5.New()
 	hasher.Write([]byte(password))
 	md5Password := hex.EncodeToString(hasher.Sum(nil))
-
-	// --- Client Initialization (REST Client - Not strictly needed for upload, but good practice)
-	config := opensubtitles.Config{
-		ApiKey:    apiKey,
-		UserAgent: userAgent,
-	}
-	// We don't actually use the REST client (`client`) in this specific example
-	// but we might in combined examples. We *do* need the uploader.
-	_, err := opensubtitles.NewClient(config) // Initialize to get uploader configured
-	if err != nil {
-		fmt.Printf("Error creating client (required for uploader setup): %v\n", err)
-		return
-	}
-	fmt.Println("REST Client initialized (uploader setup complete). NOTE: REST client is unused here.")
 
 	// --- Uploader Initialization & Login ---
 	// Get the uploader instance (Assuming NewClient initialized it correctly)
@@ -88,7 +67,7 @@ func main() {
 		return
 	}
 
-	fmt.Println("Enter the IMDb ID of the movie/show (e.g., 1371111):")
+	fmt.Println("Enter the IMDb ID -ONLY NUMBERS- of the movie/show (e.g., 1371111):")
 	imdbIDStr, _ := reader.ReadString('\n')
 	imdbIDStr = strings.TrimSpace(imdbIDStr)
 	// Validate IMDb ID format (basic check)

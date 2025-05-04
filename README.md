@@ -46,7 +46,7 @@ import (
 func main() {
 	config := opensubtitles.Config{
 		ApiKey:    "YOUR_API_KEY", // Replace with your actual API key
-		UserAgent: "YourAppName/1.0", // Replace with your app's user agent
+		UserAgent: "YourAppName/1.0", // Replace with your app's user agent. If there are errors regarding userAgent, leave it as an empty string ""
 	}
 
 	client, err := opensubtitles.NewClient(config)
@@ -88,7 +88,7 @@ func main() {
 
 ```go
 	// Search by IMDb ID
-	var imdbID = 1371111 // Example: Inception
+	var imdbID = 1375666 // Example: Inception
 	searchParams := opensubtitles.SearchSubtitlesParams{
 		IMDbID: &imdbID,
 		Languages: opensubtitles.String("en"), // Optional: filter by language

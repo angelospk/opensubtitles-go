@@ -101,6 +101,9 @@ func NewXmlRpcUploader() (Uploader, error) {
 // Login authenticates the user via XML-RPC and stores the token.
 func (c *xmlRpcClient) Login(username, password, language, userAgent string) error {
 	var result xmlRpcLoginResponse // Use unexported struct
+	if userAgent == "" {
+		userAgent = "opensubtitles-api v5.1.2"
+	}
 	err := c.client.Call("LogIn", []interface{}{username, password, language, userAgent}, &result)
 	if err != nil {
 		if err == rpc.ErrShutdown {
@@ -159,7 +162,7 @@ func (c *xmlRpcClient) Upload(intent UserUploadIntent) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("error preparing TryUpload params: %w", err)
 	}
-	log.Printf("[DEBUG] TryUpload Params: %+v\n", tryParams)
+	// log.Printf("[DEBUG] TryUpload Params: %+v\n", tryParams)
 
 	// Optional: Modify filename for uniqueness? (Consider if needed)
 	// uniqueSubFilename := fmt.Sprintf("%s_%d.srt", filepath.Base(intent.SubtitleFilePath), time.Now().UnixNano())
