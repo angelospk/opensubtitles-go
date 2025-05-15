@@ -247,20 +247,43 @@ func (c *xmlRpcClient) tryUploadSubtitles(params XmlRpcTryUploadParams) (*xmlRpc
 
 	// Prepare the complex structure expected by the API
 	cdMap := make(map[string]interface{})
-	cdMap["subhash"] = params.SubHash
-	cdMap["subfilename"] = params.SubFilename
-	cdMap["moviehash"] = params.MovieHash
-	cdMap["moviebytesize"] = params.MovieByteSize
-	cdMap["moviefilename"] = params.MovieFilename
+
+	// Get the data for "cd1"
+	cd1Data, ok := params.CDs["cd1"]
+	if !ok {
+		// This case should ideally be handled, perhaps by an error from PrepareTryUploadParams
+		// or a check before calling tryUploadSubtitles.
+		// For now, log and continue, which might lead to an API error if fields are missing.
+		log.Println("[WARN] tryUploadSubtitles: 'cd1' data not found in params.CDs")
+		// Or return an error:
+		// return nil, fmt.Errorf("tryUploadSubtitles: 'cd1' data not found in params.CDs")
+	}
+
+	// Populate cdMap using cd1Data for file-specific fields
+	// and params for global fields that might also be part of cdMap.
+	if ok { // Only populate from cd1Data if it exists
+		cdMap["subhash"] = cd1Data.SubHash
+		cdMap["subfilename"] = cd1Data.SubFilename
+		cdMap["moviehash"] = cd1Data.MovieHash
+		cdMap["moviebytesize"] = cd1Data.MovieByteSize
+		cdMap["moviefilename"] = cd1Data.MovieFilename
+		if cd1Data.MovieFPS != "" {
+			cdMap["moviefps"] = cd1Data.MovieFPS
+		}
+		if cd1Data.MovieTimeMS != "" {
+			cdMap["movietimems"] = cd1Data.MovieTimeMS
+		}
+		// MovieFrames is in XmlRpcTryUploadFileItem but not used in original cdMap population. Add if needed.
+		// if cd1Data.MovieFrames != "" {
+		// 	cdMap["movieframes"] = cd1Data.MovieFrames
+		// }
+	}
+
+	// Global fields that are also part of cdMap (potentially redundant with baseInfoMap but replicating original logic)
 	if params.IDMovieImdb != "" {
-		cdMap["imdbid"] = params.IDMovieImdb
+		cdMap["imdbid"] = params.IDMovieImdb // This is from params directly
 	}
-	if params.MovieFPS != "" {
-		cdMap["moviefps"] = params.MovieFPS
-	}
-	if params.MovieTimeMS != "" {
-		cdMap["movietimems"] = params.MovieTimeMS
-	}
+	// Continue with other global fields from params for cdMap
 	if params.SubAuthorComment != "" {
 		cdMap["subauthorcomment"] = params.SubAuthorComment
 	}
@@ -282,7 +305,7 @@ func (c *xmlRpcClient) tryUploadSubtitles(params XmlRpcTryUploadParams) (*xmlRpc
 	if params.AutomaticTranslation != "" {
 		cdMap["automatictranslation"] = params.AutomaticTranslation
 	}
-	if params.ForeignPartsOnly != "" {
+	if params.ForeignPartsOnly != "" { // This field is in both cdMap and baseInfoMap in the original logic
 		cdMap["foreignpartsonly"] = params.ForeignPartsOnly
 	}
 
