@@ -40,6 +40,8 @@ vendor/
 # Build artifacts
 /build/
 
+/testdata/
+
 # Wails build directory
 /cmd/gui/build/bin/
 /cmd/gui/build/
