@@ -157,11 +157,6 @@ func CalculateSubHash(filePath string) (string, error) {
 
 // PrepareUploadSubtitlesParams prepares the parameters for the final UploadSubtitles XML-RPC call.
 func PrepareUploadSubtitlesParams(tryParams XmlRpcTryUploadParams, subtitlePath string) (XmlRpcUploadSubtitlesParams, error) {
-	// Calculate subtitle hash (reuse from tryParams if possible? No, needs fresh calc)
-	subHash, err := CalculateSubHash(subtitlePath)
-	if err != nil {
-		return XmlRpcUploadSubtitlesParams{}, fmt.Errorf("failed to calculate subhash: %w", err)
-	}
 
 	base64Content, subHash, err := ReadAndEncodeSubtitle(subtitlePath)
 	if err != nil {
@@ -248,8 +243,13 @@ type XmlRpcTryUploadParams struct {
 	ForeignPartsOnly     string `xmlrpc:"foreignpartsonly,omitempty"`     // "0" or "1"
 }
 
+// XmlRpcUploadSubtitlesParams is the top-level structure for the UploadSubtitles call.
+type XmlRpcUploadSubtitlesParams struct {
+	BaseInfo XmlRpcUploadSubtitlesBaseInfo      `xmlrpc:"baseinfo"`
+	CDs      map[string]XmlRpcUploadSubtitlesCD `xmlrpc:",inline"` // Map "cd1", "cd2" etc. to CD data
+}
+
 // XmlRpcUploadSubtitlesBaseInfo holds the 'baseinfo' part for UploadSubtitles.
-// Based on PrepareUploadSubtitlesParams.
 type XmlRpcUploadSubtitlesBaseInfo struct {
 	IDMovieImdb      string `xmlrpc:"idmovieimdb,omitempty"`
 	SubLanguageID    string `xmlrpc:"sublanguageid,omitempty"`
@@ -257,28 +257,20 @@ type XmlRpcUploadSubtitlesBaseInfo struct {
 	MovieAka         string `xmlrpc:"movieaka,omitempty"`
 	SubAuthorComment string `xmlrpc:"subauthorcomment,omitempty"`
 	SubTranslator    string `xmlrpc:"subtranslator,omitempty"`
-	// Added based on TryUpload params that might be relevant here too
-	HearingImpaired  string `xmlrpc:"hearingimpaired,omitempty"`
-	HighDefinition   string `xmlrpc:"highdefinition,omitempty"`
-	ForeignPartsOnly string `xmlrpc:"foreignpartsonly,omitempty"`
+	HearingImpaired  string `xmlrpc:"hearingimpaired,omitempty"`  // "0" or "1"
+	HighDefinition   string `xmlrpc:"highdefinition,omitempty"`   // "0" or "1"
+	ForeignPartsOnly string `xmlrpc:"foreignpartsonly,omitempty"` // "0" or "1"
 }
 
 // XmlRpcUploadSubtitlesCD holds the 'cdX' data for UploadSubtitles.
-// Based on PrepareUploadSubtitlesParams.
 type XmlRpcUploadSubtitlesCD struct {
 	SubHash       string `xmlrpc:"subhash"`
 	SubFilename   string `xmlrpc:"subfilename"`
 	MovieHash     string `xmlrpc:"moviehash,omitempty"`     // Optional here? API implies it's needed if no imdbid
 	MovieByteSize string `xmlrpc:"moviebytesize,omitempty"` // Optional here?
 	SubContent    string `xmlrpc:"subcontent"`              // Base64 encoded content
-	MovieFPS      string `xmlrpc:"moviefps,omitempty"`
-	MovieTimeMS   string `xmlrpc:"movietimems,omitempty"`
-}
-
-// XmlRpcUploadSubtitlesParams is the top-level structure for the UploadSubtitles call.
-type XmlRpcUploadSubtitlesParams struct {
-	BaseInfo XmlRpcUploadSubtitlesBaseInfo      `xmlrpc:"baseinfo"`
-	CDs      map[string]XmlRpcUploadSubtitlesCD `xmlrpc:",inline"` // Map "cd1", "cd2" etc. to CD data
+	MovieFPS      string `xmlrpc:"moviefps,omitempty"`      // String in API
+	MovieTimeMS   string `xmlrpc:"movietimems,omitempty"`   // String in API	
 }
 
 // --- Helper Functions ---

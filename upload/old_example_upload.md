@@ -1,3 +1,4 @@
+this example **does not** work:
 ```go
 package main
 
@@ -19,9 +20,7 @@ import (
 
 	"github.com/joho/godotenv"
 
-	// Use the correct module path for your project
-	// Alias for our errors
-	coreerrors "github.com/angelospk/osuploadergui/pkg/core/errors"
+
 	"github.com/angelospk/osuploadergui/pkg/core/opensubtitles"
 )
 
@@ -36,7 +35,6 @@ func main() {
 		log.Println("Warning: Could not load .env file:", err)
 	}
 
-	// apiKey := os.Getenv("OS_API_KEY") // NOTE: API Key is for REST API, not used by XML-RPC Login
 	username := os.Getenv("OS_USERNAME")
 	plainPassword := os.Getenv("OS_PASSWORD") // Read plain password
 
@@ -72,32 +70,13 @@ func main() {
 	}
 	log.Printf("XML-RPC Login successful!")
 
-	// --- REST API Calls (Commented Out) ---
-	/*
-	   log.Println("--- Logging In (REST - Skipped) ---")
-	   // ... REST Login ...
-
-	   log.Println("\n--- Getting User Info (REST - Skipped) ---")
-	   // ... REST GetUserInfo ...
-
-	   log.Println("\n--- Searching Features (REST - Skipped) ---")
-	   // ... REST SearchFeatures ...
-
-	   log.Println("\n--- Searching Subtitles (REST - Skipped) ---")
-	   // ... REST SearchSubtitles ...
-
-	   log.Println("\n--- Requesting Download (REST - Skipped) ---")
-	   // ... REST RequestDownload ...
-
-	   log.Println("\n--- Uploading Subtitle (REST - Skipped) --- ")
-	   // ... REST Upload (now known to be likely incompatible) ...
-	*/
+	
 
 	// --- XML-RPC Upload Process (Subtitle Only) ---
 	log.Println("\n--- XML-RPC Upload Process (Subtitle Only) --- ")
 	// --- Configurable values for the test upload ---
-	subtitlePathForUpload := `pkg/core/opensubtitles/testdata/the woman who run 2020.srt` // Use dummy.srt for test
-	imdbIDForUpload := "11697690"                                                         // IMDB ID for Fight Club
+	subtitlePathForUpload := `pkg/core/opensubtitles/testdata/the woman who run 2020.srt` 
+	imdbIDForUpload := "11697690"                                                         
 	languageIDForUpload := "ell"
 	// --- End Configurable values ---
 

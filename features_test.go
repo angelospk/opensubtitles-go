@@ -12,33 +12,6 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// Helper function to unmarshal feature attributes based on type hint
-// Note: In a real application, you'd likely use type assertion after getting the response.
-// This helper is mainly for testing the response structure flexibility.
-func unmarshalFeatureAttributes(t *testing.T, raw json.RawMessage, featureType string) interface{} {
-	t.Helper()
-	switch featureType {
-	case "Movie":
-		var attrs FeatureMovieAttributes
-		err := json.Unmarshal(raw, &attrs)
-		require.NoError(t, err)
-		return attrs
-	case "Tvshow":
-		var attrs FeatureTvshowAttributes
-		err := json.Unmarshal(raw, &attrs)
-		require.NoError(t, err)
-		return attrs
-	case "Episode":
-		var attrs FeatureEpisodeAttributes
-		err := json.Unmarshal(raw, &attrs)
-		require.NoError(t, err)
-		return attrs
-	default:
-		t.Fatalf("Unknown feature type for unmarshalling: %s", featureType)
-		return nil
-	}
-}
-
 func TestSearchFeaturesSuccessByID(t *testing.T) {
 	expectedIMDbID := "539911" // API expects string without 'tt'
 	expectedFeatureID := "1480735"

@@ -26,7 +26,6 @@ package upload
 // potentially reusing/adapting from the old xmlrpc_client.go
 
 import (
-	"crypto/md5"
 	"errors"
 	"fmt"
 	"log"
@@ -163,10 +162,6 @@ func (c *xmlRpcClient) Upload(intent UserUploadIntent) (string, error) {
 		return "", fmt.Errorf("error preparing TryUpload params: %w", err)
 	}
 	// log.Printf("[DEBUG] TryUpload Params: %+v\n", tryParams)
-
-	// Optional: Modify filename for uniqueness? (Consider if needed)
-	// uniqueSubFilename := fmt.Sprintf("%s_%d.srt", filepath.Base(intent.SubtitleFilePath), time.Now().UnixNano())
-	// tryParams.SubFilename = uniqueSubFilename
 
 	// 2. Call TryUploadSubtitles
 	log.Println("Calling TryUploadSubtitles...")
@@ -435,13 +430,6 @@ func (c *xmlRpcClient) uploadSubtitles(params XmlRpcUploadSubtitlesParams) (*xml
 		log.Printf("[ERROR] Unexpected UploadSubtitles response type: %T, Value: %+v", rawResp, rawResp)
 		return nil, fmt.Errorf("unexpected UploadSubtitles response type: %T (%v)", rawResp, rawResp)
 	}
-}
-
-// md5Sum returns the MD5 hash of the input bytes.
-func md5Sum(data []byte) []byte {
-	h := md5.New()
-	h.Write(data)
-	return h.Sum(nil)
 }
 
 // boolToString defined in helpers.go
