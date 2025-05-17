@@ -231,6 +231,10 @@ func PrepareUploadSubtitlesParams(tryParams XmlRpcTryUploadParams, subtitlePath 
 			MovieReleaseName: tryParams.MovieReleaseName,
 			MovieAka:         tryParams.MovieAka,
 			SubAuthorComment: tryParams.SubAuthorComment,
+			SubTranslator:    tryParams.SubTranslator,
+			HearingImpaired:  tryParams.HearingImpaired,
+			HighDefinition:   tryParams.HighDefinition,
+			ForeignPartsOnly: tryParams.ForeignPartsOnly,
 			// SubTranslator, HearingImpaired, etc. are intentionally omitted as per UploadSubtitles baseinfo spec
 		},
 		CDs: map[string]XmlRpcUploadSubtitlesCD{
