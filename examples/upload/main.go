@@ -96,6 +96,11 @@ func main() {
 		IMDBID:           imdbIDStr,
 		LanguageID:       languageID,
 		VideoFilePath:    videoPath, // Optional
+		HearingImpaired:  false,
+		HighDefinition:   true,
+		FPS:              25.0,
+		Translator:       "retail",
+		Comment:          "official subs",
 		// VideoFileName will be set automatically if videoPath is provided (inside uploader logic)
 		// Other fields (FPS, ReleaseName, etc.) can be added if needed
 		// HearingImpaired: false, // Example boolean
